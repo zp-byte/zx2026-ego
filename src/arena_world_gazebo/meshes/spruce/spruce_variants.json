@@ -1,0 +1,24 @@
+{
+ "_comment": [
+  "picea_abies 云杉变体几何（DeFoP 原林资产），供 tools/import_spruce_world.py 使用。",
+  "量法：lxml 按 COLLADA 语义取 <vertices><input semantic='POSITION'> 指向的 source，",
+  "     逐 z 分层统计水平半径 r=hypot(x,y)（见 tools/measure_spruce_meshes.py）。",
+  "     务必不要用正则扫 <float_array> —— normals/TEXCOORD 的数组会被误当顶点，",
+  "     得出 3.26~3.41m 的假高度（真实值见下）。",
+  "坐标系：mesh 局部系。z=0 为地面（六棵树 zmin 均为 ~-0.01，即树根贴地）。",
+  "trunk_z = 光干段顶端高度 = 冠底高度（该层以上横向半径骤增到 crown_r 量级）。",
+  "高度为未缩放值；世界里的逐棵 scale 由导入器乘上去。"
+ ],
+ "1": {"height": 2.258, "trunk_z": 0.45, "trunk_r": 0.155, "crown_r": 1.89,
+       "n_verts": 538503, "n_tris": 609422},
+ "2": {"height": 2.387, "trunk_z": 0.85, "trunk_r": 0.150, "crown_r": 2.23,
+       "n_verts": 111248, "n_tris": 127963},
+ "3": {"height": 2.396, "trunk_z": 1.30, "trunk_r": 0.175, "crown_r": 1.82,
+       "n_verts": 110100, "n_tris": 122913},
+ "4": {"height": 2.331, "trunk_z": 0.95, "trunk_r": 0.165, "crown_r": 1.62,
+       "n_verts": 7090,   "n_tris": 11851},
+ "5": {"height": 2.341, "trunk_z": 0.95, "trunk_r": 0.150, "crown_r": 1.72,
+       "n_verts": 6886,   "n_tris": 11645},
+ "6": {"height": 2.416, "trunk_z": 1.70, "trunk_r": 0.200, "crown_r": 1.35,
+       "n_verts": 2746,   "n_tris": 4467}
+}

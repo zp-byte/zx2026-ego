@@ -1,0 +1,51 @@
+# GCS v0 profile — zx2026 仿真联合调试（单 ROS master :11411，一进程带 6 机）
+profile: sim
+mode: sim                     # 一级开关：sim=触发式启动（takeoff/back/land 阶段机自驱）
+server: 127.0.0.1:9870        # 地面站 hub 地址
+send_hz: 5.0
+ids: [0, 1, 2, 3, 4, 5]
+topics:
+  odom: /drone_{id}/odom                        # nav_msgs/Odometry
+  phase: /drone_{id}/mission/phase              # std_msgs/String
+  battery: null                                 # 仿真无电量
+  fc: null
+  liveness:                                     # 规划活性（nav 闭环 20Hz 恒发，
+    - /drone_{id}/vel_cmd                       #  死即断；/path 重规划才发=假死误报）
+  grid: /drone_{id}/occ_grid                    # 闭环建图栅格（1Hz 进快照→面板地图）
+  stage: /zx2026/state                          # 全局阶段机（P1..P5/DONE）
+  score: /zx2026/score/{id}                     # zx2026_common/Score（latched，比分条）
+  mission: /zx2026/mission/{id}                 # 任务指派（latched，payload→投放点）
+  task: /zx2026/task_update                     # 任务进度事件（TaskUpdate：LANDED/RETIRED）
+  summary: /zx2026/score_summary                # 赛末总分条（latched："total=.. s1=.. s2=.."）
+  match: /drone_{id}/match/result               # std_msgs/String MATCH/TIMEOUT（FR-1.8）
+  drop_done: /drone_{id}/payload/done           # std_msgs/Bool 投放确认（FR-1.8）
+  metrics: /drone_{id}/nav_metrics              # std_msgs/Float32MultiArray 11项（FR-1.7 碰撞/clearance）
+  match_progress: /drone_{id}/match/progress    # std_msgs/String 匹配过程（FR-1.9）
+  grid_cloud: null                              # FR-1.4 sim 用 OccupancyGrid（grid 键）
+
+# GCS v0 第 2 步：操作编排（gcs_ops.py）——命令模板与门限全配置化
+ops:
+  status_file: /home/ubuntu/zx2026_defop_ws/run_logs/gcs_status.json
+  shell_prefix: >-
+    source /opt/ros/noetic/setup.bash &&
+    source /home/ubuntu/zx2026_defop_ws/devel/setup.bash &&
+    export ROS_MASTER_URI=http://127.0.0.1:11411 &&
+    export ROS_HOSTNAME=127.0.0.1 &&
+  cmds:
+    trigger: rosservice call /zx2026/start      # P2_WAIT -> P3_TAKEOFF
+    takeoff: null                               # 仿真由 stage_controller 驱动
+    back: null
+    land: null
+    panic: 'rostopic pub -1 /zx2026/abort std_msgs/String "data: GCS_PANIC"'
+    # panic=全局急停广播：各 executor 进 ABORT 终态 + 原地悬停自锁（第 4 步 ②）
+  stagger_s: 2.0                                # 错峰起飞间隔
+  retries: 2
+  execute_timeout_s: 300.0
+  time_limit_s: 600                             # 科目总时限（FR-1.6 倒计时）
+  terminal_phases: ["DONE", "FAILED", "ABORT"]  # ABORT=panic 终态（不算 FAILED）
+  gates:
+    link_lost_s: 3.0
+    max_vel: 0.10                               # POSITIONING 静止门限
+    plan_dead_s: 5.0
+    autonomy: mission                           # sim: 相位流; real: plan 流
+    pre_start_stages: ["P1_INIT", "P2_WAIT"]

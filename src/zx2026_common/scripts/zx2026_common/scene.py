@@ -1,0 +1,652 @@
+# -*- coding: utf-8 -*-
+"""场景模型：解析 scene_topology.yaml + fleet.yaml，提供碰撞 / 射线 / 占用查询。
+
+无 ROS 依赖（除配置文件路径），供 arena_world / arena_sensor / arena_nav /
+arena_mission 共用同一份场景权威数据。
+"""
+import json
+import math
+import os
+import random
+
+import yaml
+
+from zx2026_common import config as cfg
+from zx2026_common import geometry as geo
+
+
+# ---------------------------------------------------------------------------
+# 障碍物
+# ---------------------------------------------------------------------------
+class Obstacle:
+    """轴对齐盒障碍（立木/灌木/路缘/围栏/标识柱的包围盒）。
+
+    kind=="tree" 额外携带「圆柱树干 + 冠包络」几何（lo/hi 保留作 AABB 兜底，
+    供其余 kind 使用）。
+
+    冠的地位（2026-10-01 云杉林换场景）：
+      树干与冠**_都**参与硬碰撞 / lidar / A* 占用。此前冠仅视觉，是因为
+      杨树冠底 ≥2.81 恒在巡航带 (≤2.60) 之上，判定永远不触发；云杉冠底
+      中位 1.22 正压巡航线，若冠不入感知层，nav 会把路径规划进冠里而物理
+      挡住、判官又不报——即"贴隐形物"活锁。故四处（collides / collides_xy /
+      raycast / collision monitor）统一按 `_crown_z_range` 判定。
+    旧场景兼容：crown_h=None 时按球冠语义（球心 crown_z、半径 crown_r）。
+
+    `crown_collidable`（表级 meta，默认 True）：
+      杨树档 2026-10-02 晚用户裁决「冠物理、视觉都删掉，只保留树枝」= **False**
+      （沿革：10-01 只去碰撞冠 → 10-02 上半天「冠=物理存在」→ 当晚双删）。
+      置 False 时 `_crown_z_range` 返回 None，于是 collides / collides_xy /
+      raycast / 判官 `_crown_hit` / nav `_obstacle_nearest` 与越顶判据**同时**
+      看不见冠（一个杠杆，四层一致）；world_builder 侧同键不发 c_crown 且不拼
+      v_leaf，depth_sim / camera_render 同键不入画。这让「物理不挡、判官却报」
+      这类静默失配在结构上不可能发生。
+      注：置 True 只恢复**物理**冠包络，**不**恢复冠视觉（视觉 mesh 已在
+      world_builder 源码中删除，回滚须恢复那两行，见该函数 docstring）。
+    """
+
+    __slots__ = ("lo", "hi", "kind", "id",
+                 "cx", "cy", "trunk_r", "trunk_h", "crown_r", "crown_z",
+                 "crown_h", "crown_collidable", "branches",
+                 "mesh_variant", "mesh_scale", "mesh_yaw", "mesh_kind")
+
+    def __init__(self, lo, hi, kind="tree", oid=0):
+        self.lo = lo
+        self.hi = hi
+        self.kind = kind
+        self.id = oid
+        # tree 专用几何字段（其余 kind 保持 None）
+        self.cx = None
+        self.cy = None
+        self.trunk_r = None
+        self.trunk_h = None
+        self.crown_r = None
+        self.crown_z = None
+        self.crown_h = None  # 冠包络高度（table 场景用；None=按球冠旧语义）
+        self.crown_collidable = True  # 表级 meta；False=冠不存在（物理+视觉双删，四层同时失效）
+        self.branches = None  # 细枝列表 [(sx,sy,sz,ex,ey,ez,r),...]，真机场景建模
+        # mesh 视觉元数据（table 场景；world_builder 消费，None=旧圆柱树）
+        self.mesh_variant = None
+        self.mesh_scale = None
+        self.mesh_yaw = None
+        # 表级 mesh 种类（"poplar"/"spruce"/None）→ world_builder 选发射路径与 mesh 目录
+        self.mesh_kind = None
+
+
+class Zone:
+    __slots__ = ("id", "kind", "polygon", "pads", "ref")
+
+    def __init__(self, zid, kind, polygon, pads=None, ref=None):
+        self.id = zid
+        self.kind = kind
+        self.polygon = polygon  # [(x,y),...]
+        self.pads = pads or []
+        self.ref = ref
+
+    def contains_2d(self, p):
+        return geo.point_in_poly_2d(p, self.polygon)
+
+
+class DropPoint:
+    __slots__ = ("id", "xyz", "type_id", "marker", "color")
+
+    def __init__(self, did, xyz, type_id, marker, color=""):
+        self.id = did
+        self.xyz = tuple(xyz)
+        self.type_id = type_id
+        self.marker = marker
+        self.color = color  # 平台色（规则口径；缺省时回退 color_map）
+
+
+class DroneConfig:
+    __slots__ = ("drone_id", "payload", "sensor_range")
+
+    def __init__(self, drone_id, payload, sensor_range):
+        self.drone_id = drone_id
+        self.payload = payload
+        self.sensor_range = sensor_range
+
+
+# ---------------------------------------------------------------------------
+# Scene
+# ---------------------------------------------------------------------------
+class Scene:
+    def __init__(self, scene_cfg=None, fleet_cfg=None):
+        self.scene_cfg = scene_cfg if scene_cfg is not None else cfg.load("scene_topology.yaml")
+        self.fleet_cfg = fleet_cfg if fleet_cfg is not None else cfg.load("fleet.yaml")
+
+        v = self.scene_cfg["venue"]
+        self.venue = {"size": tuple(v["size"]), "ground_z": float(v.get("ground_z", 0.0))}
+
+        # zones（先解析 ref）
+        raw_zones = list(self.scene_cfg["zones"])
+        by_id = {}
+        for z in raw_zones:
+            kind = z.get("kind", "open_field")
+            if z.get("kind") == "pad" and z.get("pads"):
+                pads = self._make_pads(z)
+            else:
+                pads = None
+            by_id[z["id"]] = Zone(z["id"], kind,
+                                  [tuple(p) for p in z.get("polygon", [])],
+                                  pads=pads, ref=z.get("ref"))
+        for z in raw_zones:
+            if z.get("ref"):
+                target = by_id[z["ref"]]
+                by_id[z["id"]].pads = target.pads
+                by_id[z["id"]].polygon = target.polygon
+        self.zones = by_id
+
+        # 投送平台（颜色权威源 color_map：TYPE→color，三端共用）
+        cm = self.scene_cfg.get("color_map", {}) or {}
+        self.color_map = {str(k): str(v) for k, v in cm.items()}
+        self.drop_points = [
+            DropPoint(d["id"], d["xyz"], d["type_id"], d.get("marker", ""),
+                      d.get("color", self.color_map.get(d["type_id"], "")))
+            for d in self.scene_cfg.get("drop_points", [])
+        ]
+        self.payload_types = list(self.scene_cfg.get("payload_types", []))
+
+        # 穿越区
+        cz = self.scene_cfg.get("crossing_zone", {})
+        self.crossing_zone = [tuple(p) for p in cz.get("polygon", [])]
+
+        # 障碍物生成
+        transit = self.zones.get("transit")
+        self.obstacles = []
+        self.rng = random.Random(self._forest_seed())
+        # 仿真树枝层（真机场景建模；sim_settings branches.enabled 默认关=无枝基线）
+        sim = cfg.load("sim_settings.yaml")
+        self.branch_cfg = sim.get("branches", {}) or {}
+        self.branch_cfg_enabled = bool(self.branch_cfg.get("enabled", False))
+        # 独立随机流：枝绝不扰动森林 rng 流（否则同 seed 树干位漂移——
+        # branch_selftest 对照场景实证；同 seed 有枝/无枝场景必须逐位一致）。
+        # 种子=森林种子×run_seed：同布局不同枝形，A/B 跨 seed 有布局变异。
+        rs = int(sim.get("run_seed", 42))
+        self.br_rng = random.Random(self._forest_seed() * 100003 + rs * 17)
+        self._gen_forest(transit)
+        self._load_static_obstacles()
+
+        # 无人机编队
+        self.drone_radius = float(self.fleet_cfg.get("drone_radius", 0.35))
+        self.drones = [
+            DroneConfig(d["drone_id"], d["payload"], float(d.get("sensor_range", 5.0)))
+            for d in self.fleet_cfg.get("drones", [])
+        ]
+        self.drone_count = len(self.drones)
+
+    def _forest_seed(self):
+        for z in self.scene_cfg["zones"]:
+            if z.get("kind") == "forest" and z.get("forest"):
+                return z["forest"].get("density_seed", 42)
+        return 42
+
+    def _load_tree_table(self, rel):
+        """加载显式树表（相对 config 目录或绝对路径）。
+
+        返回 (rows, meta)。meta 携带表级元数据（当前用 mesh_kind 决定
+        world_builder 走哪条视觉发射路径）。旧表无 meta 时返回 {}，与
+        改动前逐位一致。
+        """
+        path = rel if os.path.isabs(rel) else os.path.join(
+            cfg.pkg_config_dir(), rel)
+        with open(path, "r", encoding="utf-8") as fp:
+            data = yaml.safe_load(fp)
+        return data.get("trees", []), (data.get("meta") or {})
+
+    def _load_branch_template(self, rel):
+        """加载真枝模板（表 meta.branch_file，与树表同目录同解析惯例）。
+
+        返回 {variant: [[x0,y0,z0, x1,y1,z1, r], ...]}；rel 为空/文件缺失
+        返回 None —— 调用方据此不实例化枝（宁可无枝，也不要悬空引用）。
+
+        模板坐标是**模型局部系**（原点在干基、z=0 在地面），与 wood/leaves
+        mesh 同一坐标系（由 tools/extract_poplar_branches.py 重放网格生成器
+        得到）。实例化见 `_attach_real_branches`。
+        """
+        if not rel:
+            return None
+        path = rel if os.path.isabs(rel) else os.path.join(
+            cfg.pkg_config_dir(), rel)
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as fp:
+            doc = json.load(fp)
+        out = {}
+        for name, v in doc.items():
+            if not name.startswith("tree_"):
+                continue
+            out[int(name.split("_")[1])] = v.get("branches", [])
+        return out or None
+
+    def _attach_real_branches(self, ob, tpl):
+        """把真枝模板实例化到世界系，写进 ob.branches。
+
+        变换口径（与 world_builder.tree_model_poplar 逐字一致）：
+          · 模型**无模型级 scale**；视觉 mesh 靠 `<scale>s</scale>` 缩放 ⇒
+            link 系坐标 = 局部坐标 × s（碰撞体 c_trunk 也写在 link 系，同例）
+          · 模型 pose = `cx cy 0 0 0 yaw` ⇒ 世界 = R(yaw)·(s·p) + (cx, cy, gz)
+        故枝与视觉枝、与 c_trunk 天然共用一个变换，不会各说各话。
+        """
+        if not tpl:
+            return
+        try:                       # 表里 variant 若被写成字符串也会命中（否则静默无枝）
+            segs = tpl.get(int(ob.mesh_variant))
+        except (TypeError, ValueError):
+            return
+        if not segs:
+            return
+        s = float(ob.mesh_scale or 1.0)
+        th = float(ob.mesh_yaw or 0.0)
+        ct, st = math.cos(th), math.sin(th)
+        gz = self.venue["ground_z"]
+
+        def w(p):
+            px, py, pz = p[0] * s, p[1] * s, p[2] * s
+            return (ob.cx + ct * px - st * py,
+                    ob.cy + st * px + ct * py,
+                    gz + pz)
+
+        ob.branches = [w(seg[0:3]) + w(seg[3:6]) + (seg[6] * s,)
+                       for seg in segs]
+
+    def _make_pads(self, zone):
+        n = int(zone["pads"])
+        sx, sy = zone["pad_spacing"]
+        ox, oy = zone["pad_origin"]
+        pads = []
+        cols = 3
+        for i in range(n):
+            c = i % cols
+            r = i // cols
+            pads.append((ox + c * sx, oy + r * sy))
+        return pads
+
+    def _gen_forest(self, transit):
+        if transit is None or transit.kind != "forest":
+            return
+        f = None
+        for z in self.scene_cfg["zones"]:
+            if z.get("kind") == "forest":
+                f = z.get("forest")
+                break
+        if not f:
+            return
+
+        generator = f.get("generator", "procedural")
+        oid = 0
+        clear_r = float(f.get("drop_clearance", 1.5))
+        dps = [(d.xyz[0], d.xyz[1]) for d in self.drop_points]
+
+        def near_drop(x, y):
+            return any((x - dx) ** 2 + (y - dy) ** 2 < clear_r * clear_r
+                       for dx, dy in dps)
+
+        if generator == "static":
+            # 静态树集：按配置规则生成确定性位置
+            tree_sets = f.get("tree_sets", [])
+            for ts in tree_sets:
+                layout = ts.get("layout", "grid")
+                count = int(ts.get("count", 0))
+                trunk_r = ts.get("trunk_r", [0.16, 0.30])
+                height = float(ts.get("height", 3.2))
+                for i in range(count):
+                    if layout == "grid":
+                        cols = int(ts.get("cols", 7))
+                        ox, oy = ts.get("origin", [0.0, 0.0])
+                        sx, sy = ts.get("spacing", [4.1, 4.6])
+                        c = i % cols
+                        r = i // cols
+                        bx = ox + c * sx
+                        by = oy + r * sy
+                    elif layout == "line":
+                        sx, sy = ts.get("start", [0.0, 0.0])
+                        ex, ey = ts.get("end", [1.0, 1.0])
+                        t = (count - 1 - i) / max(count - 1, 1) if count > 1 else 0.5
+                        bx = sx + t * (ex - sx)
+                        by = sy + t * (ey - sy)
+                    else:
+                        continue
+                    jitter = float(ts.get("jitter", 0.0))
+                    if jitter > 0:
+                        bx += self.rng.uniform(-jitter / 2.0, jitter / 2.0)
+                        by += self.rng.uniform(-jitter / 2.0, jitter / 2.0)
+                    if near_drop(bx, by):
+                        continue
+                    r = self.rng.uniform(*trunk_r)
+                    h = height
+                    crown_r = float(ts.get("crown_r", 1.2))
+                    gz = self.venue["ground_z"]
+                    lo = (bx - r, by - r, gz)
+                    hi = (bx + r, by + r, gz + h)
+                    ob = Obstacle(lo, hi, "tree", oid)
+                    ob.cx = bx
+                    ob.cy = by
+                    ob.trunk_r = r
+                    ob.trunk_h = h
+                    ob.crown_r = crown_r
+                    ob.crown_z = gz + h  # 球冠球心在树干顶，冠体延伸到 ~h+crown_r
+                    self._decorate_tree(ob)
+                    self.obstacles.append(ob)
+                    oid += 1
+            return
+
+        if generator == "table":
+            # 显式树表：逐树 (x,y,trunk/crown 几何+mesh 视觉元数据)，坐标来自
+            # 外部场景转换（tools/import_poplar_sdf.py），不消耗森林 rng 流
+            # ——确定性天然成立，run_seed/density_seed 不再影响布局。
+            # 转换时已保证平台/起降净空，near_drop 仅作防御性兜底。
+            rows, tmeta = self._load_tree_table(f.get("table_file", ""))
+            mesh_kind = tmeta.get("mesh_kind")
+            # 冠是否入碰撞（表级 meta；老表无键=True=逐位旧行为）
+            crown_col = bool(tmeta.get("crown_collidable", True))
+            # 真枝模板（表级 meta；无此键或文件缺失=不实例化，ob.branches 保持
+            # _decorate_tree 的结果=默认 None）
+            tpl = self._load_branch_template(tmeta.get("branch_file"))
+            gz = self.venue["ground_z"]
+            for row in rows:
+                bx, by = float(row["x"]), float(row["y"])
+                if near_drop(bx, by):
+                    continue
+                r = float(row["trunk_r"])
+                h = float(row["trunk_h"])
+                lo = (bx - r, by - r, gz)
+                hi = (bx + r, by + r, gz + h)
+                ob = Obstacle(lo, hi, "tree", oid)
+                ob.cx = bx
+                ob.cy = by
+                ob.trunk_r = r
+                ob.trunk_h = h
+                ob.crown_r = float(row["crown_r"])
+                # 冠包络中心（外部场景的真实冠几何；旧语义球心=干顶）
+                ob.crown_z = (float(row["crown_z"]) if row.get("crown_z") is not None
+                              else gz + h)
+                ob.crown_h = (float(row["crown_h"]) if row.get("crown_h") is not None
+                              else None)
+                ob.crown_collidable = crown_col
+                ob.mesh_variant = row.get("variant")
+                ob.mesh_scale = row.get("scale")
+                ob.mesh_yaw = row.get("yaw", 0.0)
+                ob.mesh_kind = mesh_kind
+                self._decorate_tree(ob)
+                # 真枝覆盖程序化细枝：真枝来自网格生成器（与视觉 mesh 同源），
+                # 程序化细枝（sim_settings.branches，默认关）是旧的凭空建模。
+                # 表 meta 挂了 branch_file 时以真枝为准。
+                self._attach_real_branches(ob, tpl)
+                self.obstacles.append(ob)
+                oid += 1
+            return
+
+        # procedural 旧逻辑（保留可回退）
+        poly = transit.polygon
+        xs = [p[0] for p in poly]
+        ys = [p[1] for p in poly]
+        xmin, xmax = min(xs), max(xs)
+        ymin, ymax = min(ys), max(ys)
+
+        for _ in range(int(f.get("n_trees", 300))):
+            x = self.rng.uniform(xmin, xmax)
+            y = self.rng.uniform(ymin, ymax)
+            if not transit.contains_2d((x, y)):
+                continue
+            if near_drop(x, y):
+                continue
+            r = self.rng.uniform(*f["trunk_r"])
+            h = self.rng.uniform(*f["tree_h"])
+            crown_r = float(f.get("crown_r", 1.2))
+            gz = self.venue["ground_z"]
+            lo = (x - r, y - r, gz)
+            hi = (x + r, y + r, gz + h)
+            ob = Obstacle(lo, hi, "tree", oid)
+            ob.cx = x
+            ob.cy = y
+            ob.trunk_r = r
+            ob.trunk_h = h
+            ob.crown_r = crown_r
+            ob.crown_z = gz + h
+            self._decorate_tree(ob)
+            self.obstacles.append(ob)
+            oid += 1
+        for _ in range(int(f.get("n_bushes", 120))):
+            x = self.rng.uniform(xmin, xmax)
+            y = self.rng.uniform(ymin, ymax)
+            if not transit.contains_2d((x, y)):
+                continue
+            if near_drop(x, y):
+                continue
+            w = self.rng.uniform(0.3, 0.6)
+            h = self.rng.uniform(*f["bush_h"])
+            lo = (x - w / 2, y - w / 2, self.venue["ground_z"])
+            hi = (x + w / 2, y + w / 2, self.venue["ground_z"] + h)
+            self.obstacles.append(Obstacle(lo, hi, "bush", oid))
+            oid += 1
+
+    def _decorate_tree(self, ob):
+        """按 sim_settings branches 段给树干附细枝（世界系线段+半径）。
+
+        默认关（无枝基线逐位不变）；开时每树确定性生成（独立 br_rng 流，
+        不扰动森林 rng——见 __init__ 注释）。枝参与 raycast / collides /
+        collides_xy（感知+硬碰撞），球冠仍仅视觉不动（设计律）。"""
+        if not self.branch_cfg_enabled:
+            return
+        per = self.branch_cfg.get("per_tree", [3, 5])
+        n = self.br_rng.randint(int(per[0]), int(per[1]))
+        zr = self.branch_cfg.get("z_range", [0.8, 2.6])
+        lr = self.branch_cfg.get("len_range", [0.6, 1.6])
+        rr = self.branch_cfg.get("r_range", [0.008, 0.022])
+        er = self.branch_cfg.get("el_range", [-0.5, 0.3])
+        gz = self.venue["ground_z"]
+        brs = []
+        for _ in range(n):
+            az = self.br_rng.uniform(0.0, 2.0 * math.pi)
+            el = self.br_rng.uniform(float(er[0]), float(er[1]))
+            ln = self.br_rng.uniform(float(lr[0]), float(lr[1]))
+            r = self.br_rng.uniform(float(rr[0]), float(rr[1]))
+            z0 = self.br_rng.uniform(float(zr[0]), float(zr[1]))
+            # 起点在树干表面，方向水平略下倾（常见枝形）
+            sx = ob.cx + math.cos(az) * ob.trunk_r
+            sy = ob.cy + math.sin(az) * ob.trunk_r
+            sz = gz + z0
+            dx = math.cos(el) * math.cos(az)
+            dy = math.cos(el) * math.sin(az)
+            dz = math.sin(el)
+            brs.append((sx, sy, sz,
+                        sx + dx * ln, sy + dy * ln, sz + dz * ln, r))
+        ob.branches = brs or None
+
+    def _load_static_obstacles(self):
+        for sob in self.scene_cfg.get("static_obstacles", []):
+            lo = tuple(sob.get("lo", [0, 0, 0]))
+            hi = tuple(sob.get("hi", [1, 1, 1]))
+            kind = sob.get("kind", "box")
+            oid = len(self.obstacles)
+            self.obstacles.append(Obstacle(lo, hi, kind, oid))
+
+    # ------------------------------------------------------------------ queries
+    def get_pads(self):
+        tz = self.zones.get("takeoff")
+        return tz.pads if tz else []
+
+    def drone_config(self, drone_id):
+        for d in self.drones:
+            if d.drone_id == drone_id:
+                return d
+        return None
+
+    def drop_point(self, did):
+        """按 id 查投送平台，未找到返回 None。"""
+        for dp in self.drop_points:
+            if dp.id == did:
+                return dp
+        return None
+
+    def color_for_type(self, type_id):
+        """补给类型 → 平台色（权威源 color_map；未知类型返回 ""）。
+
+        平台上带 color 时以平台为准（同类型多平台可异色），否则回退映射。
+        """
+        for dp in self.drop_points:
+            if dp.type_id == type_id and dp.color:
+                return dp.color
+        return self.color_map.get(type_id, "")
+
+    def in_crossing_zone(self, p):
+        """判断二维点 p=(x,y) 是否在穿越区内。"""
+        if not self.crossing_zone:
+            return True
+        return geo.point_in_poly_2d(p, self.crossing_zone)
+
+    @property
+    def crossing_zone_center(self):
+        """返回穿越区多边形重心 (x,y)。"""
+        if not self.crossing_zone:
+            return (0.0, 0.0)
+        poly = self.crossing_zone
+        n = len(poly)
+        cx = sum(p[0] for p in poly) / n
+        cy = sum(p[1] for p in poly) / n
+        return (cx, cy)
+
+    def collides(self, pos, radius=None, skip_ground=False):
+        """球(pos, radius) 与任一障碍或地面碰撞。
+
+        skip_ground=True 跳过地面子句（真落地 touchdown 用：landing_armed
+        门控下的最后下降段；树/围栏/机间碰撞照查——armed 漏关放过不了
+        贴树碰撞）。"""
+        radius = radius if radius is not None else self.drone_radius
+        gz = self.venue["ground_z"]
+        if not skip_ground and pos[2] - radius < gz:
+            return True
+        for ob in self.obstacles:
+            if ob.kind == "tree":
+                # 树干 + 冠包络：球 vs 竖直圆柱（两者都是硬碰撞体）
+                if self._collides_trunk(pos, radius, ob):
+                    return True
+                if self._collides_crown(pos, radius, ob):
+                    return True
+                if ob.branches:
+                    # 细枝：球 vs 线段圆柱（真机场景；默认无枝不生效）
+                    for (sx, sy, sz, ex, ey, ez, br) in ob.branches:
+                        if geo.point_segment_dist(
+                                pos, (sx, sy, sz), (ex, ey, ez)) <= br + radius:
+                            return True
+                continue
+            lo, hi = ob.lo, ob.hi
+            cx = geo.clamp(pos[0], lo[0], hi[0])
+            cy = geo.clamp(pos[1], lo[1], hi[1])
+            cz = geo.clamp(pos[2], lo[2], hi[2])
+            if geo.norm2((pos[0] - cx, pos[1] - cy, pos[2] - cz)) <= radius * radius:
+                return True
+        return False
+
+    def _collides_trunk(self, pos, radius, ob):
+        """球(pos, radius) 是否与树的竖直树干相交。"""
+        if geo.dist_xy(pos, (ob.cx, ob.cy)) > ob.trunk_r + radius:
+            return False
+        gz = self.venue["ground_z"]
+        return pos[2] + radius >= gz and pos[2] - radius <= gz + ob.trunk_h
+
+    def _crown_z_range(self, ob):
+        """冠包络的竖直跨度 (z_lo, z_hi)（世界系）。无冠返回 None。
+
+        crown_z 两种来源都已是世界绝对高度：table 场景由导入器写入，
+        旧程序化场景写作 gz+h。故此处不做任何基准变换。
+        crown_h 给包络高（云杉/杨树 table 场景）；crown_h=None 时按球冠语义
+        ——球心 crown_z、半径 crown_r，求交按竖圆柱（与 geo.ray_cylinder /
+        depth_sim_node 冠渲染自此同款，2026-10-02 球→柱修复）。
+
+        `crown_collidable=False`（杨树档 2026-10-02 晚起为 False「冠物理、视觉
+        双删」；键保留为回滚/换场杠杆）时返回 None：一个杠杆同时关掉 collides /
+        collides_xy / raycast / 判官 / nav 五处的冠判定，四层不会出现"物理不挡、
+        判官却报"的失配。
+        """
+        if not ob.crown_collidable:
+            return None
+        if ob.crown_r is None or ob.crown_z is None:
+            return None
+        zc = ob.crown_z
+        if ob.crown_h:
+            return (zc - ob.crown_h / 2.0, zc + ob.crown_h / 2.0)
+        return (zc - ob.crown_r, zc + ob.crown_r)
+
+    def _collides_crown(self, pos, radius, ob):
+        """球(pos, radius) 是否与树冠包络圆柱相交（= gz 侧 c_crown 的同几何）。"""
+        zr = self._crown_z_range(ob)
+        if zr is None:
+            return False
+        if geo.dist_xy(pos, (ob.cx, ob.cy)) > ob.crown_r + radius:
+            return False
+        return pos[2] + radius >= zr[0] and pos[2] - radius <= zr[1]
+
+    def collides_xy(self, x, y, z_lo, z_hi, pad=0.0):
+        """2D 单元(x,y) 在 z 带 [z_lo,z_hi] 内是否有障碍（A* 占用用）。"""
+        for ob in self.obstacles:
+            # 围栏/标识柱低于巡航高度，A* 不应被其阻挡
+            if ob.kind in ("fence", "marker"):
+                continue
+            if ob.kind == "tree":
+                gz = self.venue["ground_z"]
+                dxy = geo.dist_xy((x, y), (ob.cx, ob.cy))
+                # 树干圆盘 + 冠包络圆盘（各按自身 z 带与查询带重叠与否判定）
+                if not (gz + ob.trunk_h < z_lo or gz > z_hi):
+                    if dxy <= ob.trunk_r + pad:
+                        return True
+                zr = self._crown_z_range(ob)
+                if zr is not None and not (zr[1] < z_lo or zr[0] > z_hi):
+                    if dxy <= ob.crown_r + pad:
+                        return True
+                if ob.branches:
+                    # 细枝：z 带重叠 + 2D 线段距离（真机场景；默认无枝不生效）
+                    for (sx, sy, sz, ex, ey, ez, br) in ob.branches:
+                        zmin, zmax = min(sz, ez), max(sz, ez)
+                        if zmax < z_lo or zmin > z_hi:
+                            continue
+                        if geo.point_segment_dist_2d(
+                                (x, y), (sx, sy), (ex, ey)) <= br + pad:
+                            return True
+                continue
+            if ob.hi[2] < z_lo or ob.lo[2] > z_hi:
+                continue
+            if x + pad >= ob.lo[0] and x - pad <= ob.hi[0] and \
+               y + pad >= ob.lo[1] and y - pad <= ob.hi[1]:
+                return True
+        return False
+
+    def raycast(self, origin, direction, max_t=float("inf"), ground=True):
+        """返回最近命中距离 t（None 表示无命中）。direction 需归一化。"""
+        best = None
+        gz = self.venue["ground_z"]
+        if ground and direction[2] < -1e-9:
+            t = (gz - origin[2]) / direction[2]
+            if 0 <= t <= max_t:
+                best = t
+        for ob in self.obstacles:
+            if ob.kind == "tree":
+                # 树干圆柱 + 冠包络圆柱（冠已是真障碍，lidar 须反射枝叶；
+                # 与 depth_sim_node 的冠渲染自此对同一片林子口径一致）
+                gz = self.venue["ground_z"]
+                t = geo.ray_cylinder(origin, direction, (ob.cx, ob.cy),
+                                     ob.trunk_r, gz, gz + ob.trunk_h)
+                if t is not None and 0 <= t <= max_t:
+                    if best is None or t < best:
+                        best = t
+                zr = self._crown_z_range(ob)
+                if zr is not None:
+                    t = geo.ray_cylinder(origin, direction, (ob.cx, ob.cy),
+                                         ob.crown_r, zr[0], zr[1])
+                    if t is not None and 0 <= t <= max_t:
+                        if best is None or t < best:
+                            best = t
+                if ob.branches:
+                    # 细枝：有限圆柱，取最近（真机场景；默认无枝不生效）
+                    for (sx, sy, sz, ex, ey, ez, br) in ob.branches:
+                        t = geo.ray_finite_cylinder(
+                            origin, direction, (sx, sy, sz), (ex, ey, ez), br)
+                        if t is not None and 0 <= t <= max_t:
+                            if best is None or t < best:
+                                best = t
+                continue
+            t = geo.ray_aabb(origin, direction, ob.lo, ob.hi)
+            if t is not None and 0 <= t <= max_t:
+                if best is None or t < best:
+                    best = t
+        return best

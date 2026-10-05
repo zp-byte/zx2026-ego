@@ -1,0 +1,28 @@
+# =============================================================================
+# fleet.yaml — 6 机编队配置（初始位姿 / 载荷 / 传感参数）
+# =============================================================================
+
+drone_count: 6
+
+drone_radius: 0.35         # 碰撞球半径(m)
+
+drones:
+  # 规则口径：电池/药品/食品 3 类，每类 2 机（A,B,C,A,B,C）
+  - drone_id: 0
+    payload: TYPE_A
+    sensor_range: 12.0
+  - drone_id: 1
+    payload: TYPE_B
+    sensor_range: 12.0
+  - drone_id: 2
+    payload: TYPE_C
+    sensor_range: 12.0
+  - drone_id: 3
+    payload: TYPE_A
+    sensor_range: 12.0
+  - drone_id: 4
+    payload: TYPE_B
+    sensor_range: 12.0
+  - drone_id: 5
+    payload: TYPE_C
+    sensor_range: 12.0

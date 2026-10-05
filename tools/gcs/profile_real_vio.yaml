@@ -1,0 +1,89 @@
+# GCS profile — 真机 VIO（D435 + VINS-Fusion），每机一个 agent
+# 部署: 拷到机载 ~/Diff-planner/tools/ 下, server 填地面站笔记本 IP
+profile: real_vio
+mode: real                    # 一级开关：real=起飞先行+POWER/FC 门+危险命令 --yes
+                              # (hub 侧须加 --bat-min 30 才有 LOW_BAT 告警)
+server: 192.168.1.10:9870     # TODO(联调日第一件事) 现场按地面站实际 IP 改
+send_hz: 5.0
+ids: [0]                      # 单 agent 带本机: 写 [DRONE_ID] 的值
+topics:
+  odom: /vins/imu_propagate   # VINS 里程计输出
+  phase: null                 # 源码定论: multipoint 无状态机话题（multipointplan.cpp
+                              #   只发 takeoff_land/move_base_simple/goal/back_trigger/
+                              #   goal/planning_yaw）——任务终态判定走 MONITOR_TIMEOUT
+                              #   语义（盯飞超时=转 hub dash 人工盯）
+  battery: /mavros/battery
+  fc: /mavros/state
+  liveness:                   # TODO 现场定谳: rostopic hz，判据=恒频贯穿"悬停+任务"两态
+    - /drone_{id}_planning/trajectory   # FSM 事件型(重规划才发,慎选)
+                              # 候选: /position_cmd (traj_server 100Hz 定时器)
+  stage: null                 # 真机无全局阶段机——READY 门走 "stage topic n/a" 分支
+  grid: null                  # TODO 真机建图上屏: grid_map/occupancy 是 PointCloud2
+                              #   (需独立适配器), 与仿真 OccupancyGrid 不同型
+  score: null                 # 真机无 scorekeeper——比分条显示 --
+  mission: null               # 真机任务指派 multipoint points.yaml 内部持有
+  match: null                 # TODO 真机类型匹配适配器（FR-1.8）
+  drop_done: null             # TODO 真机投放确认适配器（FR-1.8）
+  metrics: null               # 真机无 nav_metrics（FR-1.7 sim 专属）
+  match_progress: null        # TODO 真机匹配进度适配器（FR-1.9）
+  grid_cloud: null            # TODO 现场定 VIO 累积点云 topic（FR-1.4 real 建图）
+
+# GCS 操作编排（gcs_ops.py）——真机命令模板（ssh 逐机执行）
+# 脚本语义（sh_files 源码核实）: takeoff/land = /px4ctrl/takeoff_land cmd 1/2；
+# back = /back_trigger；trigger(pub_trigger) = /move_base_simple/goal 一帧
+# PoseStamped 触发 multipoint 预设航点（points.yaml/flight_type 决定航点）。
+# 脚本为 zsh 且 source 相对路径 —— 必须 cd 工作空间根再执行。
+# ssh 三参数纪律: BatchMode=yes 免密失败即报错(不挂 15s 等 TTY 输密码——
+#   subprocess 无 TTY 根本输不了)、ConnectTimeout=5 断网快败、
+#   StrictHostKeyChecking=accept-new 首连不卡 known_hosts 确认
+#   (accept-new 需地面站 OpenSSH>=7.6; Ubuntu 20.04 自带 8.2 满足,
+#   老机器兜底=ssh-keyscan 预灌 known_hosts 后去掉该参数)。
+# TODO(联调日) 核实: 机 IP 网段 + ssh-copy-id 发公钥（勿用 sshpass）。
+#   目录大小写已按实机证据定 Diff-planner（小写 p, 手册写错大写 P）——
+#   联调日仍跑 DEBUG 窗 ws 探针（ls -d ~/Diff*）一次复核。
+#   panic=逐机 ssh land，交付前必须 no-prop bench 实弹验证。
+ops:
+  status_file: /home/ubuntu/zx2026_defop_ws/run_logs/gcs_status.json
+  shell_prefix: ""
+  cmds:
+    trigger: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id} 'cd ~/Diff-planner && ./sh_files/pub_trigger.sh'"
+    takeoff: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id} 'cd ~/Diff-planner && ./sh_files/takeoff.sh'"
+    back: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id} 'cd ~/Diff-planner && ./sh_files/back.sh'"
+    land: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id} 'cd ~/Diff-planner && ./sh_files/land.sh'"
+    panic: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id} 'cd ~/Diff-planner && ./sh_files/land.sh'"
+
+  # 真机调试接口（面板 DEBUG 窗 / `ops debug <名> [args]`）——约定只读，
+  # 写操作一律走上面 cmds（两段确认）。{args}=参数槽。
+  # source 用 devel/setup.sh（POSIX）而非 setup.bash——登录 shell 是
+  # zsh/bash 都通吃；远端命令含管道/重定向由 shlex.quote 整体保护。
+  debug_ssh: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id}"
+  debug_cmds:
+    ping: "echo ok && hostname && uptime"
+    ws: "ls -d ~/Diff* && ls ~/Diff-planner/sh_files/ | head"
+    ros: "cd ~/Diff-planner && source devel/setup.sh && rostopic list"
+    hz: "cd ~/Diff-planner && source devel/setup.sh && timeout 6 rostopic hz {args} -w 5 2>&1 | tee /dev/stderr | grep -q average"
+    echo: "cd ~/Diff-planner && source devel/setup.sh && timeout 6 rostopic echo -n 3 {args}"
+    node: "cd ~/Diff-planner && source devel/setup.sh && rosnode list | head -30"
+    proc: "pgrep -af 'ros|python|px4' | head -25"
+    res: "free -h | head -2 && df -h / | tail -1 && nvidia-smi --query-gpu=memory.used,temperature.gpu --format=csv,noheader"
+    log: "tail -n 30 {args}"
+
+  # preflight 真机探针（联调勘误自检，不阻断门）：依次跑 debug_cmds 里的命令。
+  # ros=远端 ROS 环境（免密+目录+source 链路）一并自检
+  probe:
+    - ping
+    - ws
+    - ros
+  stagger_s: 2.0
+  retries: 2
+  execute_timeout_s: 600.0
+  time_limit_s: 600              # 科目总时限（FR-1.6 倒计时）
+  gates:
+    link_lost_s: 3.0
+    max_vel: 0.10
+    plan_dead_s: 5.0
+    autonomy: plan                              # real: 规划流年龄
+    pre_start_stages: ["P2_WAIT"]
+    bat_min: 30.0                               # POWER 门 + LOW_BAT 告警门限(%)
+    airborne_z: 0.5                             # 离地确认 z 门限(m)
+    airborne_timeout_s: 60.0                    # 起飞后离地确认超时

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>defop_nav</name>
+  <version>0.1.0</version>
+  <description>DeFoP 三节点推理链适配（sim/真机同码）：深度补洞(depth_fill) -> seVAE 编码(vae_node) -> CPN 碰撞预测+几何监督+死端逃逸(cpn_node) -> /drone_&lt;id&gt;/vel_cmd（世界系 ENU）。模型定义 vendored 自 ~/DeFoP（BSD-3），权重引用不拷贝。运行环境 ~/defop_env（TF 2.4.1 + torch CPU）。</description>
+  <maintainer email="team@example.com">team</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+</package>
