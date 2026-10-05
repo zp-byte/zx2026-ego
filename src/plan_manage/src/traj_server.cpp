@@ -238,7 +238,10 @@ int main(int argc, char **argv)
 
   ros::Subscriber bspline_sub = nh.subscribe("planning/bspline", 10, bsplineCallback);
 
-  pos_cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>("/position_cmd", 50);
+  // 补丁 1（VENDORED.md）：原版绝对名 "/position_cmd" 对 launch <remap
+  // from="position_cmd"> 不生效（remap 只匹配相对名），六机同机互踩同一
+  // 全局话题。改相对名后 ego.launch remap 生效到 /drone_<i>/planning/pos_cmd。
+  pos_cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>("position_cmd", 50);
 
   ros::Timer cmd_timer = nh.createTimer(ros::Duration(0.01), cmdCallback);
 

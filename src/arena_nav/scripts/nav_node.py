@@ -168,15 +168,17 @@ def vel_source_of(settings):
     """planner.source 解析（纯函数，tools/defop_shadow_selftest.py 离线复用）。
 
     T2 shadow 模式配置门：返回 'defop' = defop_cpn 接管 /drone_<id>/vel_cmd
-    发布（nav_node 全管线照跑只掐发布，见 _tick 落点注释）；其余一律
-    'internal'（现状）。保守回退三连：键缺失 / planner 段为 null / 值不识
-    ——只放行 'defop' 一个外来值，yaml `planner:` 空段（None）也安全。
+    发布（nav_node 全管线照跑只掐发布，见 _tick 落点注释）；'ego' = ego 臂
+    同契约接管（ego_bridge 发 /planning/cpn_vel_raw，本节点中继——ego 当笔，
+    docs/EGO_DESIGN.md）；其余一律 'internal'（现状）。保守回退三连：键
+    缺失 / planner 段为 null / 值不识——只放行 'defop'/'ego' 两个外来值，
+    yaml `planner:` 空段（None）也安全。
     """
     sec = settings.get("planner", {}) or {}
     if not isinstance(sec, dict):  # verify minor：段为标量/列表不崩，回退
         return "internal"
     src = str(sec.get("source", "internal"))
-    return "defop" if src == "defop" else "internal"
+    return src if src in ("defop", "ego") else "internal"
 
 
 def pen_mode_of(settings):
@@ -657,7 +659,7 @@ class NavNode:
         # pen_authority_case 刀一（2026-10-04）：持笔权主键。nav=逐字节旧；
         # cpn_forever=三捆绑（起飞闸门在 executor 侧 / departure 旁路在
         # _cpn_gate / stall 冻结在发布门）。internal 模式 _pen_forever 恒 False。
-        self._pen_forever = (self._vel_source == "defop"
+        self._pen_forever = (self._vel_source in ("defop", "ego")
                              and pen_mode_of(settings) == "cpn_forever")
         # pen 档启动回声（审查 wf_ba224dac major：CPN 侧有 pen_relay 行而
         # nav 无对质行——两节点解析口径可在 rosout 直接对质）。
@@ -824,7 +826,7 @@ class NavNode:
                 # cpn 可能仍持笔（nav 停播旗后 cpn 续飞）。补一枪 False 旗
                 # + 无条件零速；cpn 侧另有 1.0s 旗 staleness 活性门兜底。
                 # internal 模式 _cpn_active 恒 False=行为逐字节不变。
-                if self._vel_source == "defop":
+                if self._vel_source in ("defop", "ego"):
                     self.pub_cpn_active.publish(Bool(data=False))
                 # 刀一.5（审查 nit）：halt 后 _tick 早退 ⇒ _cpn_gate 永不再算，
                 # 本地旗须同源清零——否则中继门（_cpn_active∧ready）放行
@@ -2633,7 +2635,7 @@ class NavNode:
         # P3 终端交接：每拍刷新持笔旗并广播（cpn 端 on_timer 首行 yield 的
         # 源头旗；本拍发布门见尾部）。internal 模式不算不广播（_cpn_gate 恒
         # False，旗无行为意义，省流）。
-        if self._vel_source == "defop":
+        if self._vel_source in ("defop", "ego"):
             self._cpn_active = self._cpn_gate(now)
             self.pub_cpn_active.publish(Bool(data=self._cpn_active))
 
@@ -2675,7 +2677,7 @@ class NavNode:
             # 放大成永久爬升：d1 落地后云避障对 0.38m 贴身障碍推 vz>0 覆盖
             # 零速 → 0.22m/s 匀速爬至 5m → OVER_HEIGHT 退赛（任务已 DONE）。
             return
-        if self._vel_source == "defop":
+        if self._vel_source in ("defop", "ego"):
             # P3 终端交接：_cpn_active=False = nav 持笔（terminal 终端接近 /
             # departure 出发场未清 / no_goal）——本拍 cmd 照常发布；True =
             # cpn 持笔（cruise 窗口），nav 静默（cmd 只算不发）。全管线
@@ -2836,7 +2838,7 @@ class NavNode:
             self._term_reason = "departure"
         else:
             self._term_reason = "cruise"
-        return cpn_active_of(self._vel_source == "defop", engaged,
+        return cpn_active_of(self._vel_source in ("defop", "ego"), engaged,
                              departure_clear, has_goal,
                              forever=self._pen_forever)
 

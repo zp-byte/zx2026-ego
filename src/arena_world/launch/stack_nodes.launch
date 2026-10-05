@@ -92,26 +92,31 @@
   </node>
 
   <!-- 前视深度相机（每机 1 份，D435 式合成渲染，DeFoP 导航图像源，2026-09-28 P1）。
-       自门控（新约定）：sim_settings.sensor.depth 段缺失或 enabled=false（默认）
-       时启动即退、零发布者、INFO 一次——默认关=零侵入基线，联调时手动开。 -->
-  <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_0" output="log">
-    <param name="drone_id" value="0"/>
-  </node>
-  <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_1" output="log">
-    <param name="drone_id" value="1"/>
-  </node>
-  <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_2" output="log">
-    <param name="drone_id" value="2"/>
-  </node>
-  <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_3" output="log">
-    <param name="drone_id" value="3"/>
-  </node>
-  <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_4" output="log">
-    <param name="drone_id" value="4"/>
-  </node>
-  <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_5" output="log">
-    <param name="drone_id" value="5"/>
-  </node>
+       【ego 路线 2026-10-05 改门控】深度源默认=Gazebo D435 插件（world_builder
+       注入，见 docs/EGO_DESIGN.md §三），真值渲染 depth_sim 整组默认不拉起；
+       WSL 渲染出不来深度图时的逃生门=roslaunch ... depth_sim:=true（回退
+       合成渲染，同话题契约 16UC1）。 -->
+  <arg name="depth_sim" default="false"/>
+  <group if="$(arg depth_sim)">
+    <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_0" output="log">
+      <param name="drone_id" value="0"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_1" output="log">
+      <param name="drone_id" value="1"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_2" output="log">
+      <param name="drone_id" value="2"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_3" output="log">
+      <param name="drone_id" value="3"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_4" output="log">
+      <param name="drone_id" value="4"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_5" output="log">
+      <param name="drone_id" value="5"/>
+    </node>
+  </group>
 
   <!-- 导航：每机 1 份 -->
   <node pkg="arena_nav" type="nav_node.py" name="nav_node_0" output="log">
@@ -154,6 +159,33 @@
       <arg name="drone_id" value="4"/>
     </include>
     <include file="$(find defop_nav)/launch/defop.launch">
+      <arg name="drone_id" value="5"/>
+    </include>
+  </group>
+
+  <!-- ego 臂（每机 1 套：ego_planner + traj_server + ego_bridge，2026-10-05
+       ego 路线）。本工作区默认开（ego 专用 ws）；联锁=sim_settings
+       planner.source: ego + pen_authority: cpn_forever（同帧装订，缺键后果=
+       ego 臂静默失效跑成 internal 基线）。defop 臂并存可用（互斥由
+       planner.source 单写者仲裁保证）。 -->
+  <arg name="ego_arm" default="true"/>
+  <group if="$(arg ego_arm)">
+    <include file="$(find ego_zx)/launch/ego.launch">
+      <arg name="drone_id" value="0"/>
+    </include>
+    <include file="$(find ego_zx)/launch/ego.launch">
+      <arg name="drone_id" value="1"/>
+    </include>
+    <include file="$(find ego_zx)/launch/ego.launch">
+      <arg name="drone_id" value="2"/>
+    </include>
+    <include file="$(find ego_zx)/launch/ego.launch">
+      <arg name="drone_id" value="3"/>
+    </include>
+    <include file="$(find ego_zx)/launch/ego.launch">
+      <arg name="drone_id" value="4"/>
+    </include>
+    <include file="$(find ego_zx)/launch/ego.launch">
       <arg name="drone_id" value="5"/>
     </include>
   </group>

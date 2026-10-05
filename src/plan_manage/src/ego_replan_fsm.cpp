@@ -217,7 +217,12 @@ namespace ego_planner
     // trigger_ = true;
     init_pt_ = odom_pos_;
 
-    Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y, 1.0);
+    // 补丁 2（VENDORED.md）：原版 goal z 写死 1.0（rviz 2D Nav Goal 惯例）。
+    // mission 分腿目标 z 携带任务语义（RECON 1.2 / cruise 2.4 / 投放 0.8 /
+    // 平台 0.3），压平 = 全任务失效。z 安全网 = virtual_ceil_height 4.4 +
+    // 判分 OVER_HEIGHT 兜底；z<-0.1 忽略守卫（:213）保留。
+    Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y,
+                           msg->pose.position.z);
 
     planNextWaypoint(end_wp);
   }

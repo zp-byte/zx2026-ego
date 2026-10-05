@@ -832,15 +832,20 @@ comms:
 # ---- 规划器来源（P3 DeFoP shadow 模式开关） ---------------------------------
 # source=internal：现行内部规划器全权（默认，与历史行为逐位一致）。
 # source=defop   ：DeFoP 臂（T2/T4 消费：defop_nav 图像源/影子模式接管）。
+# source=ego     ：ego 臂（2026-10-05 ego 路线：ZJU ego-planner 当笔，ego_bridge
+#                  发 /planning/cpn_vel_raw 中继，nav 白名单 'ego'——镜像 defop
+#                  全套持笔契约。联锁：stack_nodes ego_arm:=true + 本键同帧装订。
+#                  docs/EGO_DESIGN.md）。
 # 2026-09-29 T1 新增键位装订；消费方=nav_node.vel_source_of（P3 终端交接
-# 闸门；键缺失/非 defop 一律 internal=零行为变更）。语义详见 depth_sim_node
+# 闸门；键缺失/不识一律 internal=零行为变更）。语义详见 depth_sim_node
 # （图像源）与 P3 任务书。
 planner:
-  source: defop   # internal | defop（P3 shadow 模式开关，T2/T4 消费）
+  source: ego     # internal | defop | ego（ego 路线 2026-10-05）
   # 持笔权主键（docs/pen_authority_case.md 刀一，2026-10-04）：nav=逐字节旧
-  # 行为（默认）；cpn_forever=CPN 全程持笔——捆绑三件不可拆（executor 起飞
-  # 暖机闸门 + nav departure 门旁路 + nav stall 冻结看门狗），拆任何一件都
-  # 不安全。默认 nav 时四个文件全部零行为变更。
+  # 行为（默认）；cpn_forever=规划器全程持笔——捆绑三件不可拆（nav departure
+  # 门旁路 + nav stall 冻结看门狗 + executor 起飞暖机闸门）。ego 档：前两件
+  # 复用（桥发同名 cpn_vel_raw/debug），第三件 executor 判 source=='defop'
+  # 恒 False 自动不启用（ego 无模型秒就绪，闸门依赖不存在）。
   pen_authority: cpn_forever
   # CPN 拍间隔超此值（秒）⇒ nav 冻结零速悬停（仅 cpn_forever 生效）。
   # plan_rate 名义 10Hz 实测 2-5Hz（健康间隙 ≤0.5s），1.0 = 2× 最差健康值。

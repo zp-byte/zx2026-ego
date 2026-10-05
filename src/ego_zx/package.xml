@@ -3,7 +3,7 @@
   <name>ego_zx</name>
   <version>1.0.0</version>
   <description>zx2026 ego-planner route: per-drone launch + PositionCommand->Twist bridge (ego 当笔, mirror of pen relay contract)</description>
-  <maintainer email="zx2026@local">zx2026</maintainer>
+  <maintainer email="zx2026@example.com">zx2026</maintainer>
   <license>BSD</license>
 
   <buildtool_depend>catkin</buildtool_depend>

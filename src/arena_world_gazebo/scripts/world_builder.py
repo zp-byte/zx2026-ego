@@ -373,13 +373,59 @@ def drone_model(i, x, y):
     </inertial>
     %s
 %s
+%s
   </link>
   <plugin name="drone_vel_%d" filename="libdrone_vel_plugin.so">
     <drone_id>%d</drone_id>
     <kp>3.0</kp>
     <g>9.81</g>
   </plugin>
-</model>""" % (i, x, y, col_geo(col_box), "\n".join(vis), i, i)
+</model>""" % (i, x, y, col_geo(col_box), "\n".join(vis),
+               drone_depth_sensor(i), i, i)
+
+
+def drone_depth_sensor(i):
+    """D435 前视深度相机（ego 路线 2026-10-05，docs/EGO_DESIGN.md §三）。
+
+    - 真加 Gazebo depth sensor（libgazebo_ros_camera.so 新式 depth 模式，
+      XTDrone 同款参数；用户裁决：不复用真值渲染 depth_sim）。
+    - 装机体系原点平视（pose 全 0）：own visuals 最大前伸=机臂尖 0.12+桨
+      0.10=0.22 < near clip 0.30 ⇒ 自遮挡免疫；cam2body_（grid_map.cpp:95
+      硬编码，平移零）不破，plan_env 零改动。
+    - 话题契约对齐旧 depth_sim：/drone_<i>/depth/image_raw +
+      /drone_<i>/depth/camera_info；RGB 弃用发 image_color 不订；
+      <output>depths</output> 关点云省 CPU。
+    - 输出 32FC1 米制：grid_map.cpp:994-997 原生 convertTo(CV_16UC1,
+      k_depth_scaling_factor=1000)，与 fd250 sim 链语义逐字节一致。
+    - 内参（grid_map 走 launch 参数，不订 camera_info）：424x240 hfov 1.5184
+      ⇒ fx=fy=223.4 cx=212 cy=120（advanced_param_zx.xml 同帧装订）。
+    - 渲染率验收门 ≥5Hz（WSL 无头 gzserver，llvmpipe 梯子见设计文档 §八）。
+    """
+    return """    <sensor name="d435_depth" type="depth">
+      <pose>0 0 0 0 0 0</pose>
+      <update_rate>15.0</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <camera>
+        <horizontal_fov>1.5184</horizontal_fov>
+        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <clip><near>0.30</near><far>10.0</far></clip>
+        <depth_camera><output>depths</output></depth_camera>
+      </camera>
+      <plugin name="d435_depth_ros" filename="libgazebo_ros_camera.so">
+        <alwaysOn>true</alwaysOn>
+        <updateRate>15.0</updateRate>
+        <cameraName>drone_%d/depth</cameraName>
+        <imageTopicName>image_color</imageTopicName>
+        <cameraInfoTopicName>rgb_camera_info</cameraInfoTopicName>
+        <depthImageTopicName>image_raw</depthImageTopicName>
+        <depthImageCameraInfoTopicName>camera_info</depthImageCameraInfoTopicName>
+        <pointCloudTopicName>points</pointCloudTopicName>
+        <frameName>drone_%d/depth_optical</frameName>
+        <pointCloudCutoff>0.30</pointCloudCutoff>
+        <pointCloudCutoffMax>10.0</pointCloudCutoffMax>
+      </plugin>
+    </sensor>""" % (i, i)
 
 
 # ---------------------------------------------------------------------------
