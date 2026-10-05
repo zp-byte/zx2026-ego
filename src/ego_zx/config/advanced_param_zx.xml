@@ -1,0 +1,134 @@
+<launch>
+  <!-- =============================================================================
+       advanced_param_zx.xml — ego_planner_node arena 适配版（源自 fd250 advanced_param.xml,
+       commit 8ff6427；差异全部记录 VENDORED.md）。
+       与母本的差异（仅此四处，全走 remap/参数，无代码改动）：
+       1. 话题命名：fd250 下划线约定 /drone_<i>_xxx → arena 斜杠约定 /drone_<i>/xxx
+       2. goal 入口：remap /move_base_simple/goal（ego_replan_fsm.cpp:64 绝对名）
+          → /drone_<i>/planning/goal（mission 契约；flight_type=1）
+       3. 内参：424x240 hfov 87° → fx=fy=223.4 cx=212 cy=120（Gazebo D435 插件同源）
+       4. virtual_ceil_height 2.9 → 4.4（对齐 flight_z_ceiling 4.5；母本默认会把
+          cruise_z 2.4 以上当天花板）
+       k_depth_scaling_factor 保持 1000.0：Gazebo 插件 32FC1 米制输出经
+       grid_map.cpp:994-997 原生 convertTo(CV_16UC1, 1000) 转毫米，与母本
+       sim 链语义逐字节一致。
+       ============================================================================= -->
+  <arg name="drone_id"/>
+  <arg name="max_vel"/>
+  <arg name="max_acc"/>
+  <arg name="planning_horizon"/>
+
+  <node pkg="ego_planner" name="drone_$(arg drone_id)_ego_planner_node" type="ego_planner_node" output="log">
+
+    <remap from="~odom_world" to="/drone_$(arg drone_id)/odom"/>
+    <remap from="~planning/bspline" to="/drone_$(arg drone_id)/planning/bspline"/>
+    <remap from="~planning/data_display" to="/drone_$(arg drone_id)/planning/data_display"/>
+    <remap from="~planning/broadcast_bspline_from_planner" to="/broadcast_bspline"/>
+    <remap from="~planning/broadcast_bspline_to_planner" to="/broadcast_bspline"/>
+
+    <remap from="~grid_map/odom" to="/drone_$(arg drone_id)/odom"/>
+    <remap from="~grid_map/cloud" to="/drone_$(arg drone_id)/planning/cloud"/>
+    <remap from="~grid_map/pose" to="/drone_$(arg drone_id)/planning/camera_pose"/>
+    <remap from="~grid_map/depth" to="/drone_$(arg drone_id)/depth/image_raw"/>
+
+    <!-- goal 契约（已核实 ego_replan_fsm.cpp:64 flight_type=1 订绝对名 rviz 惯例话题）：
+         remap 到 mission_executor 发的 /drone_<i>/planning/goal。 -->
+    <remap from="/move_base_simple/goal" to="/drone_$(arg drone_id)/planning/goal"/>
+
+    <!-- planning fsm -->
+    <param name="fsm/flight_type" value="1" type="int"/>       <!-- 1=manual target 话题触发 -->
+    <param name="fsm/thresh_replan_time" value="1.0" type="double"/>
+    <param name="fsm/thresh_no_replan_meter" value="1.0" type="double"/>
+    <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/>
+    <param name="fsm/planning_horizen_time" value="3" type="double"/>
+    <param name="fsm/emergency_time" value="1.0" type="double"/>
+    <param name="fsm/realworld_experiment" value="false"/>
+    <param name="fsm/fail_safe" value="true"/>
+
+    <param name="fsm/waypoint_num" value="0" type="int"/>      <!-- 目标全部走 goal 话题 -->
+    <param name="fsm/waypoint0_x" value="0.0" type="double"/>
+    <param name="fsm/waypoint0_y" value="0.0" type="double"/>
+    <param name="fsm/waypoint0_z" value="0.0" type="double"/>
+    <param name="fsm/waypoint1_x" value="0.0" type="double"/>
+    <param name="fsm/waypoint1_y" value="0.0" type="double"/>
+    <param name="fsm/waypoint1_z" value="0.0" type="double"/>
+    <param name="fsm/waypoint2_x" value="0.0" type="double"/>
+    <param name="fsm/waypoint2_y" value="0.0" type="double"/>
+    <param name="fsm/waypoint2_z" value="0.0" type="double"/>
+    <param name="fsm/waypoint3_x" value="0.0" type="double"/>
+    <param name="fsm/waypoint3_y" value="0.0" type="double"/>
+    <param name="fsm/waypoint3_z" value="0.0" type="double"/>
+    <param name="fsm/waypoint4_x" value="0.0" type="double"/>
+    <param name="fsm/waypoint4_y" value="0.0" type="double"/>
+    <param name="fsm/waypoint4_z" value="0.0" type="double"/>
+
+    <param name="grid_map/resolution" value="0.1"/>
+    <param name="grid_map/map_size_x" value="70.0"/>           <!-- venue 70x70x14 -->
+    <param name="grid_map/map_size_y" value="70.0"/>
+    <param name="grid_map/map_size_z" value="14.0"/>
+    <param name="grid_map/local_update_range_x" value="5.5"/>
+    <param name="grid_map/local_update_range_y" value="5.5"/>
+    <param name="grid_map/local_update_range_z" value="4.5"/>
+    <param name="grid_map/obstacles_inflation" value="0.099"/>
+    <param name="grid_map/local_map_margin" value="10"/>
+    <param name="grid_map/ground_height" value="-0.01"/>       <!-- 场地地面 z=0 -->
+    <!-- camera intrinsics: 424x240, hfov 87deg (fx=fy=223.4, 方像素) -->
+    <param name="grid_map/cx" value="212.0"/>
+    <param name="grid_map/cy" value="120.0"/>
+    <param name="grid_map/fx" value="223.4"/>
+    <param name="grid_map/fy" value="223.4"/>
+    <!-- depth filter（母本原值；mindist 0.2 与插件 near clip 0.30 兼容） -->
+    <param name="grid_map/use_depth_filter" value="true"/>
+    <param name="grid_map/depth_filter_tolerance" value="0.15"/>
+    <param name="grid_map/depth_filter_maxdist" value="5.0"/>
+    <param name="grid_map/depth_filter_mindist" value="0.2"/>
+    <param name="grid_map/depth_filter_margin" value="2"/>
+    <param name="grid_map/k_depth_scaling_factor" value="1000.0"/>  <!-- 32FC1 米制→16UC1 毫米 -->
+    <param name="grid_map/skip_pixel" value="2"/>
+    <!-- local fusion -->
+    <param name="grid_map/p_hit" value="0.65"/>
+    <param name="grid_map/p_miss" value="0.35"/>
+    <param name="grid_map/p_min" value="0.12"/>
+    <param name="grid_map/p_max" value="0.90"/>
+    <param name="grid_map/p_occ" value="0.80"/>
+    <param name="grid_map/min_ray_length" value="0.1"/>
+    <param name="grid_map/max_ray_length" value="4.5"/>
+
+    <param name="grid_map/virtual_ceil_height" value="4.4"/>   <!-- 差异 4：对齐 flight_z_ceiling 4.5 -->
+    <param name="grid_map/visualization_truncate_height" value="3.5"/>
+    <param name="grid_map/show_occ_time" value="false"/>
+    <param name="grid_map/pose_type" value="1"/>               <!-- 1=odom（用户裁决：odom 进规划器） -->
+    <param name="grid_map/frame_id" value="world"/>
+
+    <!-- planner manager -->
+    <param name="manager/max_vel" value="$(arg max_vel)" type="double"/>
+    <param name="manager/max_acc" value="$(arg max_acc)" type="double"/>
+    <param name="manager/max_jerk" value="4" type="double"/>
+    <param name="manager/control_points_distance" value="0.4" type="double"/>
+    <param name="manager/feasibility_tolerance" value="0.05" type="double"/>
+    <param name="manager/planning_horizon" value="$(arg planning_horizon)" type="double"/>
+    <param name="manager/use_distinctive_trajs" value="false"/>
+    <param name="manager/drone_id" value="$(arg drone_id)"/>
+
+    <!-- trajectory optimization -->
+    <param name="optimization/lambda_smooth" value="1.0" type="double"/>
+    <param name="optimization/lambda_collision" value="0.5" type="double"/>
+    <param name="optimization/lambda_feasibility" value="0.1" type="double"/>
+    <param name="optimization/lambda_fitness" value="1.0" type="double"/>
+    <param name="optimization/dist0" value="0.5" type="double"/>
+    <param name="optimization/swarm_clearance" value="0.5" type="double"/>
+    <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
+    <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/>
+
+    <param name="bspline/limit_vel" value="$(arg max_vel)" type="double"/>
+    <param name="bspline/limit_acc" value="$(arg max_acc)" type="double"/>
+    <param name="bspline/limit_ratio" value="1.1" type="double"/>
+
+    <!-- objects prediction：机间避让交 nav Boids sep（中继仲裁），ego 不做 -->
+    <param name="prediction/obj_num" value="0" type="int"/>
+    <param name="prediction/lambda" value="1.0" type="double"/>
+    <param name="prediction/predict_rate" value="1.0" type="double"/>
+
+  </node>
+
+</launch>

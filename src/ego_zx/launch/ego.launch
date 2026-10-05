@@ -1,0 +1,40 @@
+<launch>
+  <!-- =============================================================================
+       ego.launch — 每机 1 套 ego 臂（ego_planner + traj_server + ego_bridge）。
+       话题全部 /drone_<id>/ 绝对名（arena 契约）。
+       联锁要求（镜像 defop.launch 约定）：ego 臂启用时必须配套 sim_settings.yaml
+         planner.source: ego
+         planner.pen_authority: cpn_forever   （复用 CPN 原始令中继 + nav sep 混合 +
+                                               stall 看门狗 + departure 旁路；executor
+                                               起飞暖机闸门对 ego 判 False 不启用）
+       缺键后果 = nav 永远持笔走 internal 管线（ego 臂静默失效跑成基线），非混流。
+       输出契约：桥发 /drone_<i>/planning/cpn_vel_raw (Twist, world ENU)，
+       nav 中继套 Boids sep 后统一组装 /vel_cmd——与 defop_cpn pen_relay 同一接口。
+       ============================================================================= -->
+  <arg name="drone_id" default="0"/>
+  <arg name="max_vel" default="2.0" doc="对齐 competition_rules max_vel"/>
+  <arg name="max_acc" default="6.0" doc="fd250 母本默认"/>
+  <arg name="planning_horizon" default="7.5" doc="母本：≈1.5x 感知半径"/>
+
+  <include file="$(find ego_zx)/config/advanced_param_zx.xml">
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="max_vel" value="$(arg max_vel)"/>
+    <arg name="max_acc" value="$(arg max_acc)"/>
+    <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+  </include>
+
+  <!-- 轨迹服务器：PositionCommand @100Hz（traj_server.cpp:243）。
+       补丁 1（VENDORED.md）后 advertise 为相对名，remap 生效——
+       母本绝对名 /position_cmd 在多机下互踩。 -->
+  <node pkg="ego_planner" name="drone_$(arg drone_id)_traj_server" type="traj_server" output="log">
+    <remap from="position_cmd" to="/drone_$(arg drone_id)/planning/pos_cmd"/>
+    <remap from="~planning/bspline" to="/drone_$(arg drone_id)/planning/bspline"/>
+    <param name="traj_server/time_forward" value="1.0" type="double"/>
+  </node>
+
+  <!-- 桥：PositionCommand → Twist，发中继话题（nav 唯一发布者的当笔架构）。
+       纯 rospy，无需 venv（defop 臂的 TF/torch 不在此链）。 -->
+  <node pkg="ego_zx" type="ego_bridge_node.py" name="ego_bridge_$(arg drone_id)" output="log">
+    <param name="drone_id" value="$(arg drone_id)"/>
+  </node>
+</launch>
