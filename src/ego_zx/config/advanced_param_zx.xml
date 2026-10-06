@@ -6,7 +6,8 @@
        1. 话题命名：fd250 下划线约定 /drone_<i>_xxx → arena 斜杠约定 /drone_<i>/xxx
        2. goal 入口：remap /move_base_simple/goal（ego_replan_fsm.cpp:64 绝对名）
           → /drone_<i>/planning/goal（mission 契约；flight_type=1）
-       3. 内参：424x240 hfov 87° → fx=fy=223.4 cx=212 cy=120（Gazebo D435 插件同源）
+       3. 内参：256x144 hfov 87° → fx=fy=134.9 cx=128 cy=72（Gazebo D435 插件
+          同源；Phase 0.5 v7 424x240 实测 2.3Hz < 5Hz 门，降分辨率保帧率）
        4. virtual_ceil_height 2.9 → 4.4（对齐 flight_z_ceiling 4.5；母本默认会把
           cruise_z 2.4 以上当天花板）
        k_depth_scaling_factor 保持 1000.0：Gazebo 插件 32FC1 米制输出经
@@ -72,11 +73,12 @@
     <param name="grid_map/obstacles_inflation" value="0.099"/>
     <param name="grid_map/local_map_margin" value="10"/>
     <param name="grid_map/ground_height" value="-0.01"/>       <!-- 场地地面 z=0 -->
-    <!-- camera intrinsics: 424x240, hfov 87deg (fx=fy=223.4, 方像素) -->
-    <param name="grid_map/cx" value="212.0"/>
-    <param name="grid_map/cy" value="120.0"/>
-    <param name="grid_map/fx" value="223.4"/>
-    <param name="grid_map/fy" value="223.4"/>
+    <!-- camera intrinsics: 256x144, hfov 87deg (fx=fy=134.9, 方像素) -->
+    <!-- Phase 0.5 梯子：424x240 实测 2.3Hz < 5Hz 门，降 256x144（像素 -64%） -->
+    <param name="grid_map/cx" value="128.0"/>
+    <param name="grid_map/cy" value="72.0"/>
+    <param name="grid_map/fx" value="134.9"/>
+    <param name="grid_map/fy" value="134.9"/>
     <!-- depth filter（母本原值；mindist 0.2 与插件 near clip 0.30 兼容） -->
     <param name="grid_map/use_depth_filter" value="true"/>
     <param name="grid_map/depth_filter_tolerance" value="0.15"/>

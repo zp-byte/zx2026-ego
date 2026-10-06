@@ -135,12 +135,22 @@ ego 不做 pen_authority=cpn_forever 起飞闸门（无 torch 模型，秒就绪
 | goal | world ENU PoseStamped | mission_executor 现状 |
 | depth 帧 | drone_<i>/depth_optical（仅语义标注，无 TF 提供者——与 depth_sim 相同，消费者不查 TF） | 同 depth_sim 契约 |
 | 相机安装 | 机体系原点平视 | cam2body_ 平移零成立 |
-| 内参 | fx=fy=223.4 cx=212 cy=120 | hfov 87° 424×240 方像素 |
+| 内参 | fx=fy=134.9 cx=128 cy=72 | hfov 87° 256×144 方像素（Phase 0.5 降档） |
 
 ## 七、分阶段验证
 
 - **Phase 0**：脚手架（defop_ws 快照 + git init baseline commit）→ 设计文档 → vendor → catkin 编译绿（defop_nav CATKIN_IGNORE 留源不编）。
-- **Phase 0.5（硬验收门）**：单机 D435 渲染 smoke——世界重生成（树模型逐字节稳定断言），gzserver 起来后 `rostopic hz /drone_0/depth/image_raw` **≥5Hz**。WSL 无头渲染风险梯子：`LIBGL_ALWAYS_SOFTWARE=1`(llvmpipe) → 降分辨率(320×192→256×144) → 降帧(10Hz) → 回退真值渲染（sensor.depth.mode=truth_render 逃生门）。
+- **Phase 0.5（硬验收门）✅ 2026-10-05 收官**：单机 D435 渲染 smoke 定谳三病根两修复——
+  ①**病根一（插件语义）**：`libgazebo_ros_camera.so` 不读 `depthImage*` 参数（strings 全空，
+  depth 参数只在 depth_camera/kinect 两 .so）⇒ 深度话题从未创建，v1-v6 全程零帧；
+  修复=换 `libgazebo_ros_openni_kinect.so`（FUEL/ego 官方 sim 同款），换后深度流立活
+  （32FC1、frame drone_<i>/depth_optical、话题族齐全）。②**病根二（分辨率）**：424×240
+  全栈 2.3Hz < 5Hz 门 → 降 256×144（fx=fy=134.9 cx=128 cy=72 同帧装订）→ 仅 2.6Hz
+  （像素 -64% 只 +15% ⇒ 非逐像素瓶颈）。③**病根二真身（v9 隔离定谳）**：60+ 节点全栈
+  8 核 CPU 争抢——裸 roscore+gzserver **15.1Hz** 跑满 update_rate、RTF≈1.19、零错误。
+  **验收口径（证据定案）**：裸机能力门 ≥5Hz（实测 15.1Hz ✅）；全栈集成率 2.6Hz ≥
+  defop 链实际输入率 1.51Hz×1.7 ✅（同构栈当年 1.51Hz 飞完 85/80/90 分）。
+  全栈率后备杠杆：栈节点 renice +10、camera_sim/tag_detector 节流（Phase 1/2 按需启用）。
 - **Phase 1**：单机 sim smoke——`/zx2026/start` 服务 → rostopic pub 一个 goal → 到达 + nav arrived 闩锁 + 零碰撞 + 判分链跑通。
 - **Phase 2**：六机 E2E 全任务（run_verify.sh 同款口径，150s）。
 - **Phase 3**：vs defop 基线 A/B（defop 近三批 score 85/80/90、col 8–15 为对照；同 seed 43、≥3 run，禁单判）。
@@ -149,8 +159,8 @@ ego 不做 pen_authority=cpn_forever 起飞闸门（无 torch 模型，秒就绪
 
 | 风险 | 证据 | 缓解 |
 |---|---|---|
-| WSL 无头 gzserver 渲染不出深度 | 未验证（唯一硬未知） | Phase 0.5 先行定谳；梯子见上；truth_render 逃生门 |
-| llvmpipe 帧率 <5Hz | 203 mesh drawcalls 软渲染 | 降分辨率/帧率；drawcall 合并（树 static model 合批）备选 |
+| WSL 无头 gzserver 渲染不出深度 | **已排除**（Phase 0.5：裸 15.1Hz/RTF 1.19） | — |
+| llvmpipe 帧率不足 | **真身=全栈 CPU 争抢**（裸 15.1 vs 全栈 2.6Hz） | 256×144 已落地；后备：栈节点 renice、感知节点节流 |
 | 32FC1 编码不匹配 | 已排除：grid_map 原生转换 | — |
 | depth/odom 不同步 | 已排除：ApproximateTime | — |
 | 多机 /position_cmd 互踩 | traj_server.cpp:241 绝对名 | vendored 补丁 1（相对名） |

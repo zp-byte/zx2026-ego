@@ -77,9 +77,25 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
   double yaw = 0;
   double yawdot = 0;
 
+  // 补丁 3（VENDORED.md，2026-10-05 run4 bag 法证）：同拍重复回调防护。
+  // use_sim_time 下 Gazebo RTF<1 时 /clock 会重复发布同值，ros Timer 随之
+  // 连续两拍 time_now==time_last；恰逢 yaw 收敛段（yaw_temp==last_yaw_，
+  // 低速直线/悬停段常态）时下方 (yaw_temp-last_yaw_)/dt = 0/0 = NaN，
+  // 经 LPF 永久污染 last_yaw_dot_，经 ego_bridge 直通 drone_vel_plugin
+  // SetAngularVel(NaN) 毒杀 ODE——run3/run4 四机"位置归零→UNAUTHORIZED_
+  // LANDING 误判退赛"根因（bag 定谳：85.858s vel_cmd ang.z=NaN，66ms 后
+  // 物理体 pose=0/vel=NaN）。同拍重复保持上一拍输出、不推进状态。
+  const double dt = (time_now - time_last).toSec();
+  if (!(dt > 1.0e-6))
+  {
+    yaw_yawdot.first = last_yaw_;
+    yaw_yawdot.second = last_yaw_dot_;
+    return yaw_yawdot;
+  }
+
   Eigen::Vector3d dir = t_cur + time_forward_ <= traj_duration_ ? traj_[0].evaluateDeBoorT(t_cur + time_forward_) - pos : traj_[0].evaluateDeBoorT(traj_duration_) - pos;
   double yaw_temp = dir.norm() > 0.1 ? atan2(dir(1), dir(0)) : last_yaw_;
-  double max_yaw_change = YAW_DOT_MAX_PER_SEC * (time_now - time_last).toSec();
+  double max_yaw_change = YAW_DOT_MAX_PER_SEC * dt;
   if (yaw_temp - last_yaw_ > PI)
   {
     if (yaw_temp - last_yaw_ - 2 * PI < -max_yaw_change)
@@ -96,7 +112,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
       if (yaw - last_yaw_ > PI)
         yawdot = -YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).toSec();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
   else if (yaw_temp - last_yaw_ < -PI)
@@ -115,7 +131,7 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
       if (yaw - last_yaw_ < -PI)
         yawdot = YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).toSec();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
   else
@@ -144,13 +160,18 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, ros:
       else if (yaw - last_yaw_ < -PI)
         yawdot = YAW_DOT_MAX_PER_SEC;
       else
-        yawdot = (yaw_temp - last_yaw_) / (time_now - time_last).toSec();
+        yawdot = (yaw_temp - last_yaw_) / dt;
     }
   }
 
   if (fabs(yaw - last_yaw_) <= max_yaw_change)
     yaw = 0.5 * last_yaw_ + 0.5 * yaw; // nieve LPF
   yawdot = 0.5 * last_yaw_dot_ + 0.5 * yawdot;
+  // 补丁 3 护栏：任何残余 NaN 路径在此截断（NaN!=NaN 自比较），防出闸
+  if (yaw != yaw)
+    yaw = last_yaw_;
+  if (yawdot != yawdot)
+    yawdot = 0.0;
   last_yaw_ = yaw;
   last_yaw_dot_ = yawdot;
 

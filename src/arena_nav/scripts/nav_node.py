@@ -2790,7 +2790,7 @@ class NavNode:
         最小距离 > _cpn_depart_r（2.0）才算清空——出生排 1.5m 间距期间
         nav 持笔（分离场照常管辖），散开后交 cpn。
         """
-        if self._vel_source != "defop":
+        if self._vel_source not in ("defop", "ego"):
             self._term_reason = "internal"
             return False
         has_goal = self.goal is not None

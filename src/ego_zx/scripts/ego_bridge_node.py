@@ -23,6 +23,7 @@
 """
 
 import json
+import math
 import threading
 
 import rospy
@@ -159,6 +160,14 @@ class EgoBridge(object):
                 self.pub_raw.publish(Twist())
                 with self._lock:
                     self._was_active = False
+            return
+
+        # NaN 护栏（2026-10-05 run4 bag 法证）：pos_cmd 关键字段非有限→丢帧，
+        # 让插件断链保护（0.5s）自然接管悬停，优于硬零。traj_server 的
+        # yaw_dot 除零 NaN 已在源端根治（VENDORED.md 补丁 3），此为对
+        # 其它 NaN 源的终端护栏。
+        if not (math.isfinite(cmd.velocity.x) and math.isfinite(cmd.velocity.y)
+                and math.isfinite(cmd.velocity.z) and math.isfinite(cmd.yaw_dot)):
             return
 
         tw = Twist()

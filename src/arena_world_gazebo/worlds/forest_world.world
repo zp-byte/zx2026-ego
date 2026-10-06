@@ -3706,11 +3706,10 @@
       <visualize>false</visualize>
       <camera>
         <horizontal_fov>1.5184</horizontal_fov>
-        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <image><width>256</width><height>144</height><format>R8G8B8</format></image>
         <clip><near>0.30</near><far>10.0</far></clip>
-        <depth_camera><output>depths</output></depth_camera>
       </camera>
-      <plugin name="d435_depth_ros" filename="libgazebo_ros_camera.so">
+      <plugin name="d435_depth_ros" filename="libgazebo_ros_openni_kinect.so">
         <alwaysOn>true</alwaysOn>
         <updateRate>15.0</updateRate>
         <cameraName>drone_0/depth</cameraName>
@@ -3762,11 +3761,10 @@
       <visualize>false</visualize>
       <camera>
         <horizontal_fov>1.5184</horizontal_fov>
-        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <image><width>256</width><height>144</height><format>R8G8B8</format></image>
         <clip><near>0.30</near><far>10.0</far></clip>
-        <depth_camera><output>depths</output></depth_camera>
       </camera>
-      <plugin name="d435_depth_ros" filename="libgazebo_ros_camera.so">
+      <plugin name="d435_depth_ros" filename="libgazebo_ros_openni_kinect.so">
         <alwaysOn>true</alwaysOn>
         <updateRate>15.0</updateRate>
         <cameraName>drone_1/depth</cameraName>
@@ -3818,11 +3816,10 @@
       <visualize>false</visualize>
       <camera>
         <horizontal_fov>1.5184</horizontal_fov>
-        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <image><width>256</width><height>144</height><format>R8G8B8</format></image>
         <clip><near>0.30</near><far>10.0</far></clip>
-        <depth_camera><output>depths</output></depth_camera>
       </camera>
-      <plugin name="d435_depth_ros" filename="libgazebo_ros_camera.so">
+      <plugin name="d435_depth_ros" filename="libgazebo_ros_openni_kinect.so">
         <alwaysOn>true</alwaysOn>
         <updateRate>15.0</updateRate>
         <cameraName>drone_2/depth</cameraName>
@@ -3874,11 +3871,10 @@
       <visualize>false</visualize>
       <camera>
         <horizontal_fov>1.5184</horizontal_fov>
-        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <image><width>256</width><height>144</height><format>R8G8B8</format></image>
         <clip><near>0.30</near><far>10.0</far></clip>
-        <depth_camera><output>depths</output></depth_camera>
       </camera>
-      <plugin name="d435_depth_ros" filename="libgazebo_ros_camera.so">
+      <plugin name="d435_depth_ros" filename="libgazebo_ros_openni_kinect.so">
         <alwaysOn>true</alwaysOn>
         <updateRate>15.0</updateRate>
         <cameraName>drone_3/depth</cameraName>
@@ -3930,11 +3926,10 @@
       <visualize>false</visualize>
       <camera>
         <horizontal_fov>1.5184</horizontal_fov>
-        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <image><width>256</width><height>144</height><format>R8G8B8</format></image>
         <clip><near>0.30</near><far>10.0</far></clip>
-        <depth_camera><output>depths</output></depth_camera>
       </camera>
-      <plugin name="d435_depth_ros" filename="libgazebo_ros_camera.so">
+      <plugin name="d435_depth_ros" filename="libgazebo_ros_openni_kinect.so">
         <alwaysOn>true</alwaysOn>
         <updateRate>15.0</updateRate>
         <cameraName>drone_4/depth</cameraName>
@@ -3986,11 +3981,10 @@
       <visualize>false</visualize>
       <camera>
         <horizontal_fov>1.5184</horizontal_fov>
-        <image><width>424</width><height>240</height><format>R8G8B8</format></image>
+        <image><width>256</width><height>144</height><format>R8G8B8</format></image>
         <clip><near>0.30</near><far>10.0</far></clip>
-        <depth_camera><output>depths</output></depth_camera>
       </camera>
-      <plugin name="d435_depth_ros" filename="libgazebo_ros_camera.so">
+      <plugin name="d435_depth_ros" filename="libgazebo_ros_openni_kinect.so">
         <alwaysOn>true</alwaysOn>
         <updateRate>15.0</updateRate>
         <cameraName>drone_5/depth</cameraName>
