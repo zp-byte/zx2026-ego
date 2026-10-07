@@ -71,32 +71,30 @@ from zx2026_common import geometry as geo
 from zx2026_common.scene import Scene
 import depth_sim_node as dsn
 
-# ---- 钉值（2026-10-02 晚「冠物理、视觉双删」重钉；默认噪声 cfg） -----------
-# 历史沿革（一条直线，三次重钉都是同一个杠杆在动）：
-#   ① 冠门时代（10-01 去碰撞冠档，冠不入深度图）= 旧 GATE_PIN_*
-#   ② 冠物理翻转（10-02 上半天，冠照画但仍是球近似）= 旧 SPHERE_PIN_*
-#   ③ 同日「球→柱」修复（渲染冠对齐 scene.raycast/geo.ray_cylinder）= 旧
-#      PIN_A/PIN_B
-#   ④ 冠物理、视觉双删（10-02 晚，表 meta crown_collidable=false）——**本档
-#      的默认帧逐字节等于 ① 的 GATE_PIN**（采集定谳：默认档 poseA=89506b33…
-#      poseB=2bcc090f… 正是旧冠门钉）。故 ① 的钉升为**默认钉** PIN_A/PIN_B，
-#      ③ 的钉降为**杠杆回放钉** CROWN_PIN_*（[6] 强制 crown_collidable=True
-#      复现），② 的钉仍需杠杆回放且**外加** crown_shape="sphere"：
-#        默认（表 false）           ⇒ PIN_*
-#        杠杆 True + cylinder       ⇒ CROWN_PIN_*
-#        杠杆 True + sphere         ⇒ SPHERE_PIN_*
-#      ——「杠杆是唯一行为增量」的永久对抗证明。另有一条跨门恒等式见 [6]：
-#      杠杆 True + render_crowns=False 亦回到 PIN_*（两个独立门切同一批冠像素）。
-PIN_A = "89506b332f6c52989137c47761a129e556caf5d9911f0c57c7879f77ea55472a"
-# poseA=(-27.75,-3.75,1.0) yaw=0 seed=42，默认档（表 crown_collidable=false）
-PIN_B = "2bcc090f4e691df8beb47dae6f2abce1debacfc3bd47623d23f149b97ce24047"
-# poseB=(-25.5,8.0,1.2) yaw=0 seed=424242，同上
-CROWN_PIN_A = "0f7701ab2921fade4c78b324e6b7bb8961e818c449a44a98b1d42e912d03e568"
-# 杠杆强制全树 crown_collidable=True（冠在画中，cylinder 档）poseA
-CROWN_PIN_B = "57806b01ee7d16212297614bbc736223cb81ed2288a54dbbdea5e553a826d4f8"
+# ---- 钉值（2026-10-07 换场「冠=物理+视觉、无真枝」重钉；默认噪声 cfg） -------
+# 历史沿革（同一条 `crown_collidable` + 真枝有无的杠杆在动）：
+#   ① 10-01 冠门时代（冠不入深度图）= 旧 GATE_PIN_*
+#   ② 10-02 上半天 冠照画（球近似）= 旧 SPHERE_PIN_*
+#   ③ 10-02 「球→柱」修复（渲染冠对齐 scene.raycast/geo.ray_cylinder）= 旧 PIN_*
+#   ④ 10-02 晚「冠物理、视觉双删」——旧钉（默认==冠盲帧）
+#   ⑤ **10-07 换场至 zx2026_ws 场景**：冠回来（表 crown_collidable=true）、
+#      真枝全去（表无 branch_file）⇒ **旧钉整体作废**（旧帧含 1888 段真枝像素，
+#      换场后真枝几何不存在）。按新基线重钉，三档（pose 固定，render_boxes=False）：
+#        CROWN_ON    = 默认（crown_collidable=true ⇒ 冠在画中，cylinder）
+#        CROWN_BLIND = 冠不在画中（lever False，或默认 + render_crowns=False）
+#        SPHERE      = lever 开 + crown_shape="sphere"（形状杠杆档）
+# 判别力不靠常数本身，而靠 [6] 的**三档两两不等** + 跨门恒等式 + 杠杆对抗——
+# 常数只是新基线的比特快照，故意换场后按新基线重取，不削弱本测。
+CROWN_ON_A = "350177603182cbf14d708ad46b5851c8f15d5de1789bfb2c18a3e1b2da624070"
+# poseA=(-27.75,-3.75,1.0) yaw=0 seed=42，默认档（表 crown_collidable=true）
+CROWN_ON_B = "57806b01ee7d16212297614bbc736223cb81ed2288a54dbbdea5e553a826d4f8"
+# poseB=(-25.5,8.0,1.2) yaw=0 seed=424242，同上（实测与旧 CROWN_PIN_B 恰好相同）
+CROWN_BLIND_A = "3c5792bba53eb3a5cd7a7512016028f0cb175ceeecee65a4f7bdd5a5c7929cc4"
+# lever False（或默认 + render_crowns=False）——冠不入画的 poseA
+CROWN_BLIND_B = "2bcc090f4e691df8beb47dae6f2abce1debacfc3bd47623d23f149b97ce24047"
 # 同上 poseB
 SPHERE_PIN_A = "4d3d0ab6a7415fc5ccfcb143ea43ceceffc9d1fd31e335dbd4996b2e43ccc7bb"
-# 杠杆 True + crown_shape="sphere"（球档历史钉）poseA
+# lever 开 + crown_shape="sphere"（球档历史钉；换场后实测未变）poseA
 SPHERE_PIN_B = "6e2f0942035804d1477834e2d5878b4a9d783c2dd25408887586ec43a2b0623d"
 # 同上 poseB
 
@@ -122,10 +120,10 @@ def crowns_blind(scene):
     更干净。含冠同源对质由 [2b] 承担（2026-10-02 球→柱修复后渲染冠=
     raycast 冠=竖圆柱，同一模型已可同框对质）。返回还原闭包（finally 调用）。
 
-    ⚠ 2026-10-02 晚表档 crown_collidable=false 后本函数在默认档是 **no-op**
-    （冠本就不在物理侧）。保留它是为了让 [2]/[3] 在「表翻回 true」的档位下
-    仍然成立——那正是它原始的理由。
+    ⚠ 2026-10-07 换场后表档 crown_collidable=**true**（冠回来），故本函数在默认
+    档是**真摘冠**（把物理侧冠拿掉，与 cfg_truth 的 render_crowns=False 两侧同盲）。
     """
+
     trees = [ob for ob in scene.obstacles if ob.kind == "tree"]
     saved = [t.crown_collidable for t in trees]
     for t in trees:
@@ -171,8 +169,8 @@ def main():
     # 不是"恒为 internal"。
     planner = settings.get("planner")
     assert isinstance(planner, dict) and planner.get("source") in ("internal",
-                                                                   "defop"), \
-        "顶层 planner.source 必须是 internal|defop（got %r）" % (
+                                                                   "defop", "ego"), \
+        "顶层 planner.source 必须是 internal|defop|ego（got %r）" % (
             planner.get("source") if isinstance(planner, dict) else planner,)
     # 2026-10-01：本行原为硬编码字面量 "depth.enabled=false"，但 yaml 里那个
     # 键是**在跑的运行档**（defop_ab_run.py 会装订 true 并留在工作区）——打印
@@ -194,10 +192,10 @@ def main():
 
     dcfg = dsn.make_depth_cfg({"enabled": True})
     # 对质/计数用：噪声/dropout 关 + 冠关 + 盒开（对质对象含 net 盒真值）。
-    # 冠关的理由：把 [2]/[3] 的遮挡集聚焦在盒/干/枝原语，失败归因更干净；
-    # 物理侧由 crowns_blind() 同步摘冠（表 false 后已是 no-op，见其 docstring）。
-    # 含冠同源对质=[2b]（2026-10-02 球→柱修复后渲染冠=raycast 冠；表 false
-    # 后 [2b] 自行强制杠杆）。冠渲染路径由 [6] 钉值逐位保护。
+    # 冠关的理由：把 [2]/[3] 的遮挡集聚焦在盒/干原语，失败归因更干净；
+    # 物理侧由 crowns_blind() 同步摘冠（换场后表 true，本函数是全林摘冠的有效操作）。
+    # 含冠同源对质=[2b]（2026-10-02 球→柱修复后渲染冠=raycast 冠）。冠渲染路径由
+    # [6] 钉值逐位保护。
     cfg_truth = dsn.make_depth_cfg({"enabled": True, "noise_std": 0.0,
                                     "dropout": 0.0, "render_crowns": False,
                                     "render_boxes": True})
@@ -371,73 +369,68 @@ def main():
     assert img_b1.tobytes() != img_b3.tobytes(), "异 seed 两帧逐位相同（噪声流失效？）"
     print("[5] determinism OK: same seed bitwise identical, diff seed differs")
 
-    # ---- 6) 冠删除钉 + 双杠杆对抗断言（2026-10-02 晚「冠物理、视觉双删」） ----
+    # ---- 6) 换场钉 + 双杠杆对抗断言（2026-10-07：冠=物理+视觉、无真枝） ----
     posA, yawA, seedA = POSE_A
     img_a_off = frame(scene, posA, yawA, seedA, cfg_off, cam_dirs, inv_len)
     img_b_off = frame(scene, posB, yawB, seedB, cfg_off, cam_dirs, inv_len)
     sa, sb = sha(img_a_off), sha(img_b_off)
-    assert sa == PIN_A, "poseA 默认档 sha 不符冠删除钉\n  got %s\n  pin %s" % (
-        sa, PIN_A)
-    assert sb == PIN_B, "poseB 默认档 sha 不符冠删除钉\n  got %s\n  pin %s" % (
-        sb, PIN_B)
-    # 正证据①：默认档下 render_crowns 开关必须是 no-op（冠不在画中）——
-    # 表 false 的直接后果。两图若不同 ⇒ 仍有绕开 crown_collidable 的冠绘制入口。
+    assert sa == CROWN_ON_A, "poseA 默认档 sha 不符换场钉\n  got %s\n  pin %s" % (
+        sa, CROWN_ON_A)
+    assert sb == CROWN_ON_B, "poseB 默认档 sha 不符换场钉\n  got %s\n  pin %s" % (
+        sb, CROWN_ON_B)
+    # 正证据①：默认档（表 crown_collidable=true）⇒ 冠**在画中**，故 render_crowns
+    # 开关**必须改变帧**，且关掉后逐位复现 CROWN_BLIND 钉（冠盲帧）。
     cfg_cr_off = dict(cfg_off)
     cfg_cr_off["render_crowns"] = False
     img_a_nc = frame(scene, posA, yawA, seedA, cfg_cr_off, cam_dirs, inv_len)
     img_b_nc = frame(scene, posB, yawB, seedB, cfg_cr_off, cam_dirs, inv_len)
-    assert sha(img_a_nc) == sa and sha(img_b_nc) == sb, \
-        "默认档 render_crowns 开关改变了帧——仍有绕开杠杆的冠绘制路径"
-    # 杠杆对抗证明（永久化）：强制全树 crown_collidable=True ⇒ 须逐位复现
-    # 冠物理时代钉 CROWN_PIN_*。本轮重钉的**唯一行为增量**即此杠杆：默认档
-    # == 旧冠门钉，开杠杆 == 旧柱档钉。破 ⇒ 杠杆之外另有行为差，或冠渲染
-    # 路径被改坏——两种都须查。
-    trees = [ob for ob in scene.obstacles if ob.kind == "tree"]
-    saved = [getattr(t, "crown_collidable", True) for t in trees]
-    for t in trees:
-        t.crown_collidable = True
-    try:
-        img_a_crown = frame(scene, posA, yawA, seedA, cfg_off, cam_dirs, inv_len)
-        img_b_crown = frame(scene, posB, yawB, seedB, cfg_off, cam_dirs, inv_len)
-        # 形状杠杆（「球→柱」修复的唯一增量证明）：杠杆开 + crown_shape
-        # ="sphere" 必须逐位复现球档旧钉 SPHERE_PIN_*。
-        cfg_sph = dict(cfg_off)
-        cfg_sph["crown_shape"] = "sphere"
-        img_a_sph = frame(scene, posA, yawA, seedA, cfg_sph, cam_dirs, inv_len)
-        img_b_sph = frame(scene, posB, yawB, seedB, cfg_sph, cam_dirs, inv_len)
-        # 跨门恒等式：杠杆开 + render_crowns 关 ⇒ 回到默认钉。两个**独立**门
-        # （crown_collidable / render_crowns）切的是同一批冠像素；任一门的
-        # 映射漂移，本条立刻红。
-        img_a_gate = frame(scene, posA, yawA, seedA, cfg_cr_off, cam_dirs, inv_len)
-        img_b_gate = frame(scene, posB, yawB, seedB, cfg_cr_off, cam_dirs, inv_len)
-    finally:
-        for t, v in zip(trees, saved):
-            t.crown_collidable = v
-    s_ac, s_bc = sha(img_a_crown), sha(img_b_crown)
-    assert s_ac == CROWN_PIN_A, \
-        "杠杆 True(cylinder) 回放失败 poseA\n  got %s\n  pin %s" % (
-            s_ac, CROWN_PIN_A)
-    assert s_bc == CROWN_PIN_B, \
-        "杠杆 True(cylinder) 回放失败 poseB\n  got %s\n  pin %s" % (
-            s_bc, CROWN_PIN_B)
-    assert s_ac != sa and s_bc != sb, \
-        "杠杆开关未改变帧（crown_collidable 未生效？）"
+    assert sha(img_a_nc) == CROWN_BLIND_A and sha(img_b_nc) == CROWN_BLIND_B, \
+        "默认档 render_crowns 关 != CROWN_BLIND 钉（冠盲帧）"
+    assert sha(img_a_nc) != sa and sha(img_b_nc) != sb, \
+        "默认档 render_crowns 开关未改变帧——冠不在画中（表 crown_collidable 未生效？）"
+    # 形状杠杆（「球→柱」修复的唯一增量证明）：默认 lever 开 + crown_shape
+    # ="sphere" 必须逐位复现球档钉 SPHERE_PIN_*，且 != cylinder 默认帧。
+    cfg_sph = dict(cfg_off)
+    cfg_sph["crown_shape"] = "sphere"
+    img_a_sph = frame(scene, posA, yawA, seedA, cfg_sph, cam_dirs, inv_len)
+    img_b_sph = frame(scene, posB, yawB, seedB, cfg_sph, cam_dirs, inv_len)
     assert sha(img_a_sph) == SPHERE_PIN_A, \
         "形状杠杆回放失败 poseA\n  got %s\n  sphere pin %s" % (
             sha(img_a_sph), SPHERE_PIN_A)
     assert sha(img_b_sph) == SPHERE_PIN_B, \
         "形状杠杆回放失败 poseB\n  got %s\n  sphere pin %s" % (
             sha(img_b_sph), SPHERE_PIN_B)
-    assert sha(img_a_sph) != s_ac and sha(img_b_sph) != s_bc, \
+    assert sha(img_a_sph) != sa and sha(img_b_sph) != sb, \
         "sphere 与 cylinder 两档图像逐位相同（形状开关未生效？）"
-    assert sha(img_a_gate) == sa and sha(img_b_gate) == sb, \
-        "杠杆 True + render_crowns 关 != 默认钉（两门切不同像素集？）"
+    # 冠杠杆对抗证明（永久化）：强制全树 crown_collidable=False ⇒ 须逐位复现
+    # 冠盲钉 CROWN_BLIND_*；且 lever-off + render_crowns 关 走**跨门恒等式**
+    # （两个独立门 crown_collidable / render_crowns 切同一批冠像素）。破 ⇒ 杠杆
+    # 之外另有行为差，或冠渲染路径被改坏——两种都须查。
+    trees = [ob for ob in scene.obstacles if ob.kind == "tree"]
+    saved = [getattr(t, "crown_collidable", True) for t in trees]
+    for t in trees:
+        t.crown_collidable = False
+    try:
+        img_a_blind = frame(scene, posA, yawA, seedA, cfg_off, cam_dirs, inv_len)
+        img_b_blind = frame(scene, posB, yawB, seedB, cfg_off, cam_dirs, inv_len)
+        img_a_gate = frame(scene, posA, yawA, seedA, cfg_cr_off, cam_dirs, inv_len)
+        img_b_gate = frame(scene, posB, yawB, seedB, cfg_cr_off, cam_dirs, inv_len)
+    finally:
+        for t, v in zip(trees, saved):
+            t.crown_collidable = v
+    s_ab, s_bb = sha(img_a_blind), sha(img_b_blind)
+    assert s_ab == CROWN_BLIND_A and s_bb == CROWN_BLIND_B, \
+        "杠杆 False 回放失败 poseA=%s poseB=%s（期望 CROWN_BLIND）" % (s_ab, s_bb)
+    assert s_ab != sa and s_bb != sb, \
+        "杠杆开关未改变帧（crown_collidable 未生效？）"
+    assert sha(img_a_gate) == s_ab and sha(img_b_gate) == s_bb, \
+        "lever 关 + render_crowns 关 != CROWN_BLIND（两门切不同像素集？）"
     img_b_on = img_b1     # 盒开、网在视野内：必须不同于钉（正证据）
-    assert sha(img_b_on) != PIN_B, "poseB 盒开仍与钉逐位相同（盒未入画？）"
-    print("[6] default == PIN (冠已删除，值同旧冠门钉); lever-on == CROWN pins"
-          " (冠物理档) 且 != default; lever-on+sphere == SPHERE pins 且 !="
-          " cylinder; lever-on+render_crowns-off == default (跨门恒等式);"
-          " 默认档 render_crowns 开关 no-op (冠不在画中); boxes-on differs")
+    assert sha(img_b_on) != CROWN_ON_B, "poseB 盒开仍与钉逐位相同（盒未入画？）"
+    print("[6] default == CROWN_ON pins (冠在画中); default+render_crowns-off == "
+          "CROWN_BLIND pins 且 != default; lever-off == CROWN_BLIND 且 != default;"
+          " default+sphere == SPHERE pins 且 != cylinder; lever-off+render_crowns-"
+          "off == CROWN_BLIND (跨门恒等式); boxes-on differs")
 
     # ---- 7) 性能 ----
     rng_t = random.Random(20260929)
@@ -448,7 +441,15 @@ def main():
     for _ in range(NF):
         frame(scene, posA, yawA, 1, cfg_on, cam_dirs, inv_len)
     ms_a = (time.perf_counter() - t0) / NF * 1000.0
-    assert ms_a < 30.0, "poseA 单帧 %.1f ms 超过 30ms 门" % ms_a
+    # 绝对毫秒门只在**静默宿主**上有效：同宿另跑（如 arena gzserver 满载）会把
+    # 每帧抬到 40-60ms——正是「负载读成回归」的坑。宿主不静默 ⇒ **响亮跳过**
+    # 绝对门（打印 SKIP+loadavg），保留相对/逐位判据（[8] 的比值与逐位一致抗争用）。
+    # 绝不静默通过、也不误报 FAIL。阈值 load1/核数 < 0.5（静默实测 ~0.06）。
+    _la = float(open("/proc/loadavg").read().split()[0])
+    _ncpu = os.cpu_count() or 1
+    _quiet = (_la / _ncpu) < 0.5
+    if _quiet:
+        assert ms_a < 30.0, "poseA 单帧 %.1f ms 超过 30ms 门" % ms_a
     for _ in range(3):
         frame(scene, posB, yawB, 1, cfg_on, cam_dirs, inv_len)
         frame(scene, posB, yawB, 1, cfg_off, cam_dirs, inv_len)
@@ -464,9 +465,14 @@ def main():
     # 预算 8ms：pose B=网充满视野的最重载位姿（85% 像素盒命中，float32
     # slab 实测 ~6ms）；DeFoP 契约 15Hz=66.7ms 帧预算、P1 模块门 80ms，
     # 均有余量；任务书 30ms 门由 pose A（巡航代表位）把关。
-    assert delta < 8.0, "盒增量 %.1f ms 超过 8ms 预算" % delta
-    print("[7] perf: poseA %.1f ms (<30 gate); poseB on=%.1f off=%.1f "
-          "(box delta %.1f ms, <8)" % (ms_a, ms_b_on, ms_b_off, delta))
+    if _quiet:
+        assert delta < 8.0, "盒增量 %.1f ms 超过 8ms 预算" % delta
+        print("[7] perf: poseA %.1f ms (<30 gate); poseB on=%.1f off=%.1f "
+              "(box delta %.1f ms, <8)" % (ms_a, ms_b_on, ms_b_off, delta))
+    else:
+        print("[7] SKIP 绝对毫秒门：宿主不静默 load1=%.1f/%d核=%.2f（阈0.5）"
+              " —— 实测 poseA %.1f ms、盒增量 %.1f ms 仅供参考"
+              % (_la, _ncpu, _la / _ncpu, ms_a, delta))
 
     # ---- 8) 树级预筛 on/off：逐位一致 + 提速（2026-10-01 渲染提速） ----
     # 预筛是**纯提速**：外包球严格包含各原语包围球 ⇒ 子集只多不少 ⇒ 同一张
@@ -510,8 +516,12 @@ def main():
         "tree_prefilter 未提速（on %.1f >= off %.1f ms）" % (tot_on, tot_off)
     # 六机 15Hz 的算力账：每帧 <=80ms（模块门）×6 机 = 480ms CPU/帧周期，
     # 8 核并行 → 60ms 周期 ⇒ 16.7Hz。故"最慢位姿 <=80ms"是 15Hz 的必要条件。
-    assert max(pf_on_ms) < 80.0, \
-        "最慢位姿 %.1f ms 超 80ms/帧模块门（六机 8 核下 15Hz 需 <=80ms）" % max(pf_on_ms)
+    if _quiet:
+        assert max(pf_on_ms) < 80.0, \
+            "最慢位姿 %.1f ms 超 80ms/帧模块门（六机 8 核下 15Hz 需 <=80ms）" % max(pf_on_ms)
+    else:
+        print("[8] SKIP 绝对毫秒门（宿主不静默）：最慢位姿 %.1f ms 仅供参考"
+              % max(pf_on_ms))
 
     print("ALL SELFTEST PASS")
 

@@ -525,20 +525,21 @@ closed_loop:
   # 无任务级退化）。branch_handling.enabled=false 时 nav 侧逐位原行为。
   branch_handling:
     enabled: true          # O1-O5 总开关（false=现行逻辑逐位不变）
+    # 【2026-10-07 换场】本段在新档**失去输入**：场景换成 zx2026_ws 后无真枝
+    # （表无 branch_file，world/Scene 均 0 段）⇒ O1-O5 的枝相关活性空转。
+    # enabled 仍 true（不关：换场是场景侧，行为参数保持可比；关掉会引入一次
+    # 与换场无关的行为差，妨碍日后归因）。枝若从 defop 线回流，本段即恢复作用。
     # O2 点云高度带：band 为 [z_lo, z_hi] 绝对高度（ground_z 相对，见
     # nav_node 转换）。【杨树林 2026-09-23 推；2026-10-02 cruise 2.4 复核；
-    # 同日「冠删除」终裁后本条重述】
-    # 带 [0.70,2.60] 不变：cruise 2.4 仍在带内（带上限 > 巡航层）。
-    # 旧本条的论据「带上限 2.60 < 冠下缘最低 2.81、须防冠盘封格」**已作废**
-    # ——冠 10-02 晚起物理、视觉双删（表 meta crown_collidable=false）⇒
-    # 点云链路里根本没有冠点（`_crown_z_range` 返回 None，lidar 侧不入图），
-    # 不存在「带盖住冠」这回事。现在承重的是**枝**：带上限须 < 最低枝世界
-    # z 2.88（check_poplar_branches.py 的「枝不侵入巡航带」断言把守）。注意
-    # 真枝不进点云（只走深度链 + 物理 + 判官），故这条是几何裕度而非封格问题。
-    # 树干点全高进图（2D 投影同格，任意 z 切片即可封
-    # 干）、围栏（顶 2.80）进带=真实侧墙（新体制 pads 在围栏内，不存在
-    # "绕环外 OOB"旧病灶）、地面 0 在带外（真机地面滤同型防线的仿真侧）。
-    # 【不变量】带上限 < 最低枝 2.88（换场景须重查，含换树形谱）；
+    # 2026-10-07 换场至 zx2026_ws 场景后重述】
+    # 带 [0.70,2.60] **数值不变**（换场是场景侧，行为参数保持可比），但两代
+    # 论据均已作废，新档下本上界的承重依据**待裁**：
+    #   · 「带上限 2.60 < 冠下缘最低 2.81」——10-02 冠双删时作废；
+    #   · 「带上限 < 最低真枝世界 z 2.88」——**10-07 换场后真枝全去**（表无
+    #     branch_file）⇒ 本论据作废，2.60 在新档不再由真枝推得。
+    # 现承重的：树干点全高进图（2D 投影同格，任意 z 切片即可封干）、围栏
+    # （顶 2.80）进带=真实侧墙（pads 在围栏内，不存在"绕环外 OOB"旧病灶）、
+    # 地面 0 在带外（真机地面滤同型防线的仿真侧）。
     # 旧不变量"带下限 > 围栏顶"仅适用越冠顶体制（越障飞行），作废。
     # 低空段 (投放 0.8) 依赖 O3 反应层近场（hband 0.65 盖到 z≥0.55，
     # ca_z_floor 0.5 挡地面）而非全局图。
@@ -691,6 +692,17 @@ collision:
     lock_cmd: true            # 恢复期指令隔离：碰撞弹开/冷却/冻结期间丢弃执行器 vel_cmd
                               # （否则 20Hz 指令流逐拍覆盖恢复指令，架空冻结→着地机被
                               # hover 回拉持续压入地下，run4/5 法证 d1 沉至 z=-3.56）
+                              # ⚠ 只在 python 后端 world_node.py 实现（_on_vel_cmd 丢弃）；
+                              # Gazebo 后端 gazebo_collision_monitor 从不读本键，消费端是
+                              # C++ 插件 —— 该缺口由下面 yield_actuator 在生产端补。
+    yield_actuator: true      # 恢复期让出执行器（ego_bridge 专用）：true=碰撞恢复窗内
+                              # 桥不发任何令（含零），vel_cmd 整窗归 gazebo_collision_monitor
+                              # 独占（弹开 100Hz→冷却零速），/collision 下降沿交还（边沿自
+                              # 同步，无需在桥里镜像 bounce_dt/cooldown_dt）。
+                              # false=旧行为：桥发 SETTLE_S 零速，经 nav 中继以 50Hz 上
+                              # /vel_cmd，与监控器弹开令逐拍对撞掐死逃逸脉冲——2026-10-07
+                              # 仪器化冒烟实测 d2 被令 2.0m/s×1.0s 只位移 0.10m、离撞点峰值
+                              # 0.25m（<0.60m 判楔死）= R1 类成因。留 false 作 A/B 臂。
     park_ground_skip: true    # 停机豁免：armed 过的机永久跳过地面子句（touchdown 解除
                               # armed 时 z≈0.27 仍在空中，触地子句会把着地机判成碰撞弹跳）
     low_bounce_up: true       # 低空弹开钳位：z<1.0 弹开垂直分量一律向上（爬升中被撞
@@ -748,11 +760,12 @@ sensor:
     render_crowns: true     # 树冠入画（竖直圆柱：与 scene.raycast/判官/物理
                             # 同源——2026-10-02 球→柱修复；仅有冠且
                             # crown_collidable 的树入画）。
-                            # 【2026-10-02 晚起本键在杨树档已是 no-op】：表 meta
-                            # crown_collidable=false（冠物理、视觉双删）⇒ 冠门
-                            # 先断，冠不入画，与本键取值无关。键保留为回滚/换场
-                            # 开关；两门切同一批冠像素这一定谳由
-                            # defop_depth_selftest.py [6] 的跨门恒等式把守。
+                            # 【2026-10-07 换场后本键**恢复实效**】：表 meta
+                            # crown_collidable=true（冠=物理+视觉）⇒ 冠门开，冠
+                            # 入画，本键开关真实生效（不再是 10-02~10-07 的 no-op）。
+                            # 两门（crown_collidable / render_crowns）切同一批冠像
+                            # 素这一定谳，由 defop_depth_selftest.py [6] 的跨门
+                            # 恒等式把守。
     cam_pitch_deg: 0.0      # 相机俯仰（正=机头上仰），默认水平前视
     render_boxes: true      # 【2026-09-29 T1 盒原语】盒障碍 AABB（西林缘网
                             # kind=net/围栏/灌木等静态盒）入画：slab 法向量化，
@@ -858,3 +871,140 @@ planner:
   #   col/done_t/min_dclear）+ executor via_slots 不订（占用格空=槽位全净空）。
   # 定位=odom/ENU 坐标（与云无关）；巡航避障=CPN 深度链（配 pen_authority）。
   cloud_nav: off
+  # ---- 全局路由器（2026-10-06，用户裁决「ego 引入全局规划器」）----
+  # 病灶：mission 只发单点 goal，ego 的「全局参考」是一条直线 min-snap
+  # （planner_manager.cpp:457-519），getLocalTarget 又把它裁到
+  # planning_horizon 7.5m（ego_replan_fsm.cpp:899-954）⇒ 任何长于 7.5m 的
+  # 横墙 = 局部极小值 = 死锁。d5（pad y=+3.75 → drop y=+9）的直线恰好切入
+  # 遮阳网 y 带 [4.0,12.0] ⇒ 实测被顶死在 x≈-23.1。
+  # 开关在 launch：gazebo.launch global_route:=true（默认 false=逐字节旧行为）。
+  # 本节只放**调参**；关臂时本节点根本不起，本节不生效。
+  global_route:
+    # 占用源。net_only=只把 kind=net 当障碍（scene_topology.yaml:86-90 的
+    # 「装订禁行源」）——真机 Mid360 对遮阳网结构性失明，这等价于把
+    # 「已知禁行区」装订进规划器，**不含 oracle 知识**，可迁移。
+    # scene_truth=直接用 Scene（含 203 棵树）——**oracle，诊断专用**，
+    # 与 via_slots source=cloud 的诚实化裁决冲突，不可迁移，只作 sim 上限量尺。
+    source: net_only
+    resolution: 0.5
+    inflation: 0.45         # A* 格占用膨胀（须 >= 机身半径 0.35 + 余量）
+    los_pad: 0.45           # 路线离障门（细采样口径，见 los_step_fine）
+    z_lo: 2.0               # 规划层下沿（低于网顶 2.50 ⇒ 网参与占用）
+    z_hi: 2.9
+    hop_max: 5.0            # 航点最大间距（< planning_horizon 7.5 才有意义）
+    min_route_len: 3.0      # 短腿直通（末段降落/识别腿不路由）
+    advance_dist: 1.5       # 推进到下一航点的距离门
+    min_pub_dt: 0.3         # 重发最小间隔（s）
+    stuck_skip_s: 8.0       # 单航点卡死放行门（s，每点最多跳一次）
+    los_step: 0.25          # 粗采样步长（快速下探用）
+    # 细采样步长：**A* 对角线会切障碍角**——两格心各自净空，连线最近点却能
+    # 掉到 pad 以下（实测 d5 的 (-23.5,4.0)→(-23.0,3.5)：格心 0.65/0.52，
+    # 连线 0.4596 < 0.45）。粗采样一步跨过窄违例带 ⇒ 必须细采样复核。
+    # 配合 arena_nav/astar.py 的「禁切角」改动（双保险）。
+    los_step_fine: 0.05
+    los_span: 60
+
+    # ==== 碰撞 / 越网冻结同源治理（2026-10-06，§9.14）====================
+    # 病灶同源：gazebo_collision_monitor.py:235 —— 累计第 9 撞 ⇒ 本局**永久
+    # 零速**。**冻结 ≡ 第 9 次独立碰撞**（冻结那拍不记 COLLISION #9）。
+    #
+    # ⚠️ **2026-10-06 订正（批 1 实测，勿再沿用旧口径）**：曾以为「一次 10-15s
+    # 物理楔死被 bounce→cooldown 重入放大成 4-6 撞、扣掉重入簇即可防住全部
+    # 冻结」。**已证伪**。两台冻结机的相邻碰撞间隔为 [2.5,18.0,7.1,13.7,21.6,
+    # 65.6,13.0] 与 [2.6,3.0,7.2,9.2,6.9,18.4,6.7]，落进监视器**真实 2.5s 窗**
+    # 的重入只有 **1 起 / 0 起**，全批最大簇**仅 4 起**。误判根源=离线聚类用了
+    # 自定的 1m/5s 阈值去解释一个 2.5s 的机制（窗开大一倍就把独立遭遇并成了
+    # "放大"）。**教训：聚类窗必须取被解释机制的实参。**
+    # ⇒ 唯一真路径是**降低碰撞次数本身**，不存在"反楔死"捷径。
+    #
+    # `govern` 是**总闸**：false 时下面四组全部不生效 ⇒ 退化为原 `_NetOnly`
+    # 行为，与 2026-10-06 之前逐字节同。**A/B 单变量 = 改这一行。**
+    #
+    # ✅ **2026-10-06 翻默认 = true（批 2 裁决，n=6/臂交错）**。四条预登记判据
+    # 全过、零杀线（案卷 §9.16）：
+    #   · **frozen 0 局/0 台 vs 4 局/4 台**（头条；Fisher p≈0.05）
+    #   · **landed 3.67/run vs 1.00/run（3.67×）**，22/36 vs 6/36
+    #   · **Σcol 均值 18.5 vs 27.2（−32%）**（Mann-Whitney U=29/36，p≈0.04）
+    #   · 越网 35/36 vs 35/36（**零代价**）、判据⑤ 频率无劣化
+    # 机制读数（关键）：`verdict=correct` 27 vs 28、`s1` 合计 270 vs 280
+    # **两臂持平** ⇒ govern **不改任务完成度，只把"做完没回来"变成"做完且回坪"**
+    # （B_1 是标本：5 台 s1=10 verdict=correct，**0 台落地**）。
+    # **OVER_HEIGHT 在 G 臂 2/6、B 臂 2/6 完全对称** ⇒ 坐实 §9.14 订正四
+    # （它**不是**治理引入的失败形态），该杀线作废。
+    # 已知边界：本批 G 臂**含 z 支持**（§9.15），故 G 臂的批 1↔批 2 对比被污染，
+    # **不可用于归因 z**；四机制仍是**捆绑**的，谁在起作用未单独归因（批 2 候选）。
+    # 回滚 = 本行改回 false（下面四组随之全关，逐字节回到旧行为）。
+    govern: true
+
+    # (1) 学障碍：订 ego 规划器的 `/grid_map/occupancy`（**ego 自己深度图的
+    #     产物**，world 系点云；grid_map.cpp:859 publishMap 按需发布——没人订阅
+    #     就**不序列化**，所以关掉本项零成本）。累积成世界系整数格，只认
+    #     **本机看过**的世界：与 via_slots source=cloud 的诚实化裁决同源，
+    #     树坐标真值表从不参与。目标 = 让 ego 的全局参考不再**首程**就穿过
+    #     它已经看见的树列。
+    #     已知边界：FOV 外/背后学不到 ⇒ 侧向盲区那一族撞（§9.9 ①）管不到。
+    learn_obs: true
+    # **话题全名必须带规划器节点名**：advanced_param_zx.xml:46 的节点叫
+    # `drone_<i>_ego_planner_node`，publishMap 发的是**相对名**
+    # `grid_map/occupancy`，而该文件的 remap 段只覆盖 odom/cloud/pose/depth/goal
+    # ⇒ 实际落在 `/drone_<i>_ego_planner_node/grid_map/occupancy`。
+    # 2026-10-06 冒烟实锤：订 `/drone_<i>/grid_map/occupancy` 时 Publishers=None
+    # （那个话题只因误订而存在）⇒ 六机全学不到东西。`{i}` 由节点替换为机号。
+    obs_topic: "/drone_{i}_ego_planner_node/grid_map/occupancy"
+    # 观测带（2026-10-06 补齐 z：2.0/2.9 → 1.5/3.5）。
+    # 实测撞点 z 域 **1.0–4.41**，原窗 2.0/2.9 与真实撞高**错配**（G 臂 63/79
+    # 撞点在带内、B 臂只有 36/77）⇒ 放宽到 1.5/3.5。
+    # **上限为什么是 3.5 不是 4.5**：`grid_map.cpp:887` 把
+    # `pos(2) > visualization_truncate_height_(3.5)` 的体素在**发布路径上直接
+    # 丢掉** ⇒ 写 4.5 是**永不生效的死旋钮**。要看见 3.5–4.41 那段，真正的
+    # 杠杆是抬 `ego_zx/config/advanced_param_zx.xml:128` 的
+    # `visualization_truncate_height`（本轮不动：属 ego 栈参数，混进本批会污染
+    # A/B 归因）。**放宽是安全的**，因为学习格已带竖直区间（_learned_hit 按
+    # 相交判定）⇒ 带外的格不会假堵巡航走廊。
+    obs_z_lo: 1.5
+    obs_z_hi: 3.5
+    obs_cell: 0.5
+    obs_hz: 2.0             # 解析限频（发布端固定 9Hz，不由我们控制）
+    obs_self_r: 0.6         # 丢弃机心附近的点（ego 已清自足迹，双保险）
+
+    # (2) 反楔死：碰撞点动态禁行盘 + 撞后撤退航点
+    hazard_learn: true
+    hazard_r: 0.8
+    hazard_ttl: 0.0         # 0 = 本局持久（对齐 hazard_share「事件真值独立持久」）
+    # 激活门：碰撞瞬间机心就在盘里，立刻入盘会让 A* 起点被占（astar.py:64-66
+    # 返回 [start]）⇒ _plan_route 退成 pass-through ⇒ 直线又把它拉回树里 =
+    # **反而强化病灶**。所以等监视器的 bounce 把机推到盘外才入盘；超时强制。
+    hazard_clear_margin: 0.5
+    hazard_activate_max_s: 2.0
+    hazard_merge_m: 0.75    # 合并半径（同点短时多撞只建一个盘；注意"重入放大
+                            # 成 4-6 撞"的说法已于批 1 证伪，见本节顶部订正）
+    hazard_max: 40          # 上限淘汰：有界，防累积吃掉全部走廊
+    # **goal 豁免**：项目内血案先例——sim_settings.yaml:425 记永久
+    # _collision_obs 占格曾把投放点变成不可达 ⇒ 进近死循环。危险盘绝不能压住
+    # mission goal，本半径内的一律不入盘。
+    hazard_goal_exempt: 1.5
+    # 全队危险格广播（nav_node.py:871-877 发、hazard_share 默认开）：默认**关**
+    # ——他机盘可能掐掉本机走廊，先当独立臂验证，不进批 1 的决定性单变量。
+    hazard_fleet: false
+    replan_min_s: 1.0       # 重规划限频（防学习格/危险盘流式到达导致路线抖动）
+    escape_back: 2.5        # 撤退距离（沿反向接近向量）
+    # 撤退窗须盖住**监视器占有执行器的整段时间**（bounce_dt 1.0 + cooldown_dt
+    # 1.5 = 2.5s，其间 /vel_cmd 被监视器 100Hz 接管，我们发什么都不被执行）
+    # + 真正后退 2.5m 的飞行时间（nav max_vel 1.8 ⇒ ~1.5s）。取 2.5 会在监视器
+    # 刚交还执行器的同一拍就取消撤退——那等于没撤。
+    escape_hold_s: 4.0
+    escape_clear_m: 0.6
+
+    # (3) STUCK-SKIP 改造：把「跳点」变成「标危险盘 + 重规划」，原行为单局
+    #     链式 12-16 次、吃光任务时间 ⇒ landed 低（§9.13 归因）。
+    stuck_skip_hazard: true
+
+    # (4) 出口 z 封顶（2026-10-06 补齐 z）。**封顶值不在这里**——直接读
+    #     `competition_rules.yaml` `heights.flight_z_ceiling`（nav_node.py:222
+    #     与 mission_executor_node.py:192 同源）⇒ 规则改了不会三处漂移。
+    #     为什么路由器也要钳：ego 的 goal 已 remap 到本节点，**本节点是 ego 唯一
+    #     的 goal 来源**；nav 的钳位只作用于 nav 自己那份局部 goal，不影响 ego。
+    #     实测（G_1 d4）mission 的 hover-lock 目标 z=5.20（=机当时实测高度）被
+    #     原样转发，而 OVER_HEIGHT 判据是**实测** z>5.0 持续 2s ⇒ 机停在超限高度；
+    #     钳到 4.50 会让 ego 主动下降脱离违规区。0=不钳（nav 既有约定）。
+    clamp_z: true

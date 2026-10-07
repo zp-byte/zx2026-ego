@@ -18,6 +18,30 @@
   <arg name="max_vel"/>
   <arg name="max_acc"/>
   <arg name="planning_horizon"/>
+  <arg name="inflation" default="0.099"/>  <!-- E1 臂注入点：0.099=母本默认(机身0.35 时必蹭) -->
+  <arg name="ground_filter" default="0.0"/> <!-- 地面滤阈值(m，相对 ground_height)；0=关=母本行为 -->
+  <arg name="ray_length" default="4.5"/>    <!-- 感知视距(m)；母本 4.5。
+                                                 depth_filter_maxdist = ray_length+0.5、
+                                                 local_update_range_xy = ray_length+1.0
+                                                 （$(eval) 同步派生，防三件套不同步） -->
+  <arg name="depth_mindist" default="0.45"/> <!-- 深度近距截断(m)；母本 0.2。
+                                                 本机型桨叶 r=0.10 @(±0.24,±0.24,0.062)
+                                                 ⇒ 外缘伸到 0.44 m，其在 87° 半视场内的
+                                                 内侧象限落在 0.30(near clip)-0.40 m ⇒
+                                                 0.2 把「自己的桨」画成贴身障碍格。
+                                                 0.45 = 自格上限之上（详 VENDORED 补丁 6） -->
+  <arg name="goal_topic" default="/drone_$(arg drone_id)/planning/goal"/>
+    <!-- goal 入口话题（flight_type=1 的话题契约）。默认 = mission 直发 = 基线；
+         全局路由器臂下由 ego.launch 传 /drone_<i>/planning/route_goal
+         （= global_route_node.py 的输出）。见 docs/ego_blind_flight_case.md -->
+  <arg name="p_hit" default="0.65"/> <!-- 栅格图命中似然；母本 0.65 = 默认 = 零行为变更。
+                                           为什么它是「确认时延」旋钮：log-odds 融合每格每帧
+                                           只加一次（grid_map.cpp:491-494 每帧清零计数），
+                                           logit(0.65)=0.619，而 p_min 0.12→p_occ 0.80 的
+                                           区间是 3.378 ⇒ 需 6 帧才把一格认成障碍。深度
+                                           实测 1.7-3.3 Hz ⇒ 2-3 s 时延 ⇒ 1.33 m/s 下
+                                           3-4 m 行程，视距 4.5 m 被吃掉大半。
+                                           0.90 ⇒ logit 2.197 ⇒ 2 帧（3× 提速）。 -->
 
   <node pkg="ego_planner" name="drone_$(arg drone_id)_ego_planner_node" type="ego_planner_node" output="log">
 
@@ -29,12 +53,15 @@
 
     <remap from="~grid_map/odom" to="/drone_$(arg drone_id)/odom"/>
     <remap from="~grid_map/cloud" to="/drone_$(arg drone_id)/planning/cloud"/>
+    <!-- 死 remap：全仓无 camera_pose 发布者。仅在 pose_type=1(POSE_STAMPED) 时被使用，
+         本工作区用 pose_type=2(ODOMETRY)，保留只为对齐上游 advanced_param.xml。 -->
     <remap from="~grid_map/pose" to="/drone_$(arg drone_id)/planning/camera_pose"/>
     <remap from="~grid_map/depth" to="/drone_$(arg drone_id)/depth/image_raw"/>
 
     <!-- goal 契约（已核实 ego_replan_fsm.cpp:64 flight_type=1 订绝对名 rviz 惯例话题）：
-         remap 到 mission_executor 发的 /drone_<i>/planning/goal。 -->
-    <remap from="/move_base_simple/goal" to="/drone_$(arg drone_id)/planning/goal"/>
+         默认 remap 到 mission_executor 发的 /drone_<i>/planning/goal（基线）；
+         全局路由器臂下改接路由器输出 /drone_<i>/planning/route_goal。 -->
+    <remap from="/move_base_simple/goal" to="$(arg goal_topic)"/>
 
     <!-- planning fsm -->
     <param name="fsm/flight_type" value="1" type="int"/>       <!-- 1=manual target 话题触发 -->
@@ -67,39 +94,44 @@
     <param name="grid_map/map_size_x" value="70.0"/>           <!-- venue 70x70x14 -->
     <param name="grid_map/map_size_y" value="70.0"/>
     <param name="grid_map/map_size_z" value="14.0"/>
-    <param name="grid_map/local_update_range_x" value="5.5"/>
-    <param name="grid_map/local_update_range_y" value="5.5"/>
+    <param name="grid_map/local_update_range_x" value="$(eval float(arg('ray_length')) + 1.0)"/>
+    <param name="grid_map/local_update_range_y" value="$(eval float(arg('ray_length')) + 1.0)"/>
     <param name="grid_map/local_update_range_z" value="4.5"/>
-    <param name="grid_map/obstacles_inflation" value="0.099"/>
+    <param name="grid_map/obstacles_inflation" value="$(arg inflation)"/>
     <param name="grid_map/local_map_margin" value="10"/>
     <param name="grid_map/ground_height" value="-0.01"/>       <!-- 场地地面 z=0 -->
+    <param name="grid_map/ground_filter_margin" value="$(arg ground_filter)"/>
     <!-- camera intrinsics: 256x144, hfov 87deg (fx=fy=134.9, 方像素) -->
     <!-- Phase 0.5 梯子：424x240 实测 2.3Hz < 5Hz 门，降 256x144（像素 -64%） -->
     <param name="grid_map/cx" value="128.0"/>
     <param name="grid_map/cy" value="72.0"/>
     <param name="grid_map/fx" value="134.9"/>
     <param name="grid_map/fy" value="134.9"/>
-    <!-- depth filter（母本原值；mindist 0.2 与插件 near clip 0.30 兼容） -->
+    <!-- depth filter（maxdist 随 ray_length 派生；mindist=arg，默认 0.45 截掉自桨回波） -->
     <param name="grid_map/use_depth_filter" value="true"/>
     <param name="grid_map/depth_filter_tolerance" value="0.15"/>
-    <param name="grid_map/depth_filter_maxdist" value="5.0"/>
-    <param name="grid_map/depth_filter_mindist" value="0.2"/>
+    <param name="grid_map/depth_filter_maxdist" value="$(eval float(arg('ray_length')) + 0.5)"/>
+    <param name="grid_map/depth_filter_mindist" value="$(arg depth_mindist)"/>
     <param name="grid_map/depth_filter_margin" value="2"/>
     <param name="grid_map/k_depth_scaling_factor" value="1000.0"/>  <!-- 32FC1 米制→16UC1 毫米 -->
     <param name="grid_map/skip_pixel" value="2"/>
     <!-- local fusion -->
-    <param name="grid_map/p_hit" value="0.65"/>
+    <param name="grid_map/p_hit" value="$(arg p_hit)"/>
     <param name="grid_map/p_miss" value="0.35"/>
     <param name="grid_map/p_min" value="0.12"/>
     <param name="grid_map/p_max" value="0.90"/>
     <param name="grid_map/p_occ" value="0.80"/>
     <param name="grid_map/min_ray_length" value="0.1"/>
-    <param name="grid_map/max_ray_length" value="4.5"/>
+    <param name="grid_map/max_ray_length" value="$(arg ray_length)"/>
 
     <param name="grid_map/virtual_ceil_height" value="4.4"/>   <!-- 差异 4：对齐 flight_z_ceiling 4.5 -->
     <param name="grid_map/visualization_truncate_height" value="3.5"/>
     <param name="grid_map/show_occ_time" value="false"/>
-    <param name="grid_map/pose_type" value="1"/>               <!-- 1=odom（用户裁决：odom 进规划器） -->
+    <param name="grid_map/pose_type" value="2"/>               <!-- 2=ODOMETRY（用户裁决：odom 进规划器）。
+                                                                     枚举见 plan_env/include/plan_env/grid_map.h:147:
+                                                                     POSE_STAMPED=1, ODOMETRY=2。写成 1 会走 pose 分支，
+                                                                     与无发布者的 camera_pose 配对 ⇒ 深度回调永不触发 ⇒
+                                                                     栅格图恒空 ⇒ ego 盲飞（2026-10-06 定谳）。 -->
     <param name="grid_map/frame_id" value="world"/>
 
     <!-- planner manager -->

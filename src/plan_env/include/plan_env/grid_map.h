@@ -81,6 +81,14 @@ struct MappingParameters {
   double visualization_truncate_height_, virtual_ceil_height_, ground_height_, virtual_ceil_yp_, virtual_ceil_yn_;
   bool show_occ_time_;
 
+  /* 地面滤（arena 适配，2026-10-06）：z < ground_height_ + ground_filter_margin_
+     的回波不入图。默认 0.0 = 关闭，逐字节保持母本行为。
+     起因：水平前视 D435 在巡航高度看得见地面，实测占 occ 图 61%（z 直方图
+     12,758/20,983 落在 z∈[-0.2,0.2)），地面被膨胀后会抬起一张"地板"，
+     一旦膨胀半径 ≥ 机身半径就在起飞/低飞段把机心吞进膨胀体内 ⇒ 规划器
+     全程拒停（F1/H1 档 33k+ 次 "the drone is in obstacle"）。 */
+  double ground_filter_margin_;
+
   /* active mapping */
   double unknown_flag_;
 };

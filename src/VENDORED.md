@@ -11,7 +11,7 @@
 | 包 | 内容 | 状态 |
 |---|---|---|
 | plan_manage | ego_planner_node + traj_server + launch 模板 | **2 处补丁**（下） |
-| plan_env | GridMap（深度→占据栅格，无 ESDF） | 无改动 |
+| plan_env | GridMap（深度→占据栅格，无 ESDF） | **2 处补丁**（下，2026-10-06 深度链修正） |
 | path_searching | A*/kinodynamic 前端 | 无改动 |
 | bspline_opt | B 样条梯度优化后端 | 无改动 |
 | traj_utils | Bspline 消息/多机共享 | 无改动 |
@@ -90,6 +90,42 @@ arena Gazebo RTF≈0.4-0.6（WSL 软渲染）必然周期性触发。
 z=5.4 超 flight_z_ceiling——ego 当笔后垂直方向仅 `virtual_ceil_height 4.4`
 规划层软约束，无执行层硬限幅。两者独立于本案，待后续立案。
 
+### 补丁 4：`plan_env/src/grid_map.cpp:depthToPointCloud`（off-by-one，2026-10-06）
+
+**母本自带缺陷**（`diff` 对 `~/fd250_ws/Fast-Drone-250` 的 grid_map.cpp 为空 ⇒ 非本
+ws 引入）。原码：
+
+```cpp
+depth = (*row_ptr) * inv_factor;
+row_ptr = row_ptr + mp_.skip_pixel_;   // 先前移
+if (*row_ptr == 0) { depth = max_ray_length_ + 0.1; }   // 再用前移后的指针判零
+```
+
+`depth` 取自当前像素，判零却读**右邻像素** ⇒ 「当前像素有效、右邻为 0」时把
+**真障碍点当空点丢弃**。本 ws 深度图 52% 像素为 0/NaN（插件无回波处写 0）⇒
+约半数有效点被吞。修复=先取值判零、再前移（`raw_depth` 临时量）。
+
+**为何要修**：树干在栅格图上本就只有 2-3 格宽（干径 0.15 m / 分辨率 0.1 m），
+再被吞掉约一半采样点，地图上的树干会出现空洞 ⇒ 前端 A* 可从"洞"里穿枝。
+
+### 补丁 5：`plan_env/src/grid_map.cpp:depthToPointCloud`（地面滤，2026-10-06）
+
+**新增参数** `grid_map/ground_filter_margin`（米，相对 `ground_height_`），
+默认 **0.0 = 关 = 逐字节母本行为**。>0 时丢弃 `pt_world(2) < ground_height_ + margin`
+的回波。
+
+**为何要**：D435 水平前视且装在机体原点，巡航高度 2.4 m 时地面在 4.3 m 处进视场
+下沿（`z/tan(hfov_v/2)`, hfov_v=±28.1°）。实测地面占 occ 图 **61%**
+（z 直方图 12,758/20,983 落在 z∈[-0.2,0.2)）。地面本身不碍避障，**但被膨胀后抬起
+一张"地板"**：`inf_step = ceil(inflation/resolution)`，膨胀半径一旦 ≥ 机身半径
+（0.35 m ⇒ 4 格 = 0.4 m）后，**起飞/低飞段的机心就落进膨胀地面内部** ⇒
+`getInflateOccupancy(机心) != 0` ⇒ `bspline_optimizer.cpp:1243`
+"the drone is in obstacle. This should not happen." ⇒ 规划器**全程拒停**（自囚）。
+F1/H1 档（inflation 0.45）实测 33k+ 次该报错、位置冻结不动。
+守卫=`ego_fleet_monitor.py` 的 `dmin_inf < 膨胀半径` 判据。
+
+
+
 ## launch 层适配（非代码补丁，不算入上表）
 
 - `ego_zx/config/advanced_param_zx.xml`：advanced_param.xml 的 arena 适配版
@@ -97,6 +133,50 @@ z=5.4 超 flight_z_ceiling——ego 当笔后垂直方向仅 `virtual_ceil_heigh
   ——差异逐条注释在文件头。
 - `ego_zx/launch/ego.launch`：per-drone 组装（母本 single_run_in_sim.launch 的
   对应物，去掉 map_generator/simulator/rviz——场地由 arena_world_gazebo 提供）。
+- **`grid_map/pose_type` 1 → 2（2026-10-06 定谳修：ego 盲飞根因）**。原值 1 配注释
+  「1=odom」，但 `plan_env/include/plan_env/grid_map.h:147` 声明
+  `enum { POSE_STAMPED = 1, ODOMETRY = 2, INVALID_IDX = -10000 }` ——**注释把枚举值
+  记反了**。值 1 使 `grid_map.cpp:106-113` 走 POSE_STAMPED 分支，同步器把深度与
+  `~grid_map/pose`（remap 到 `/drone_<i>/planning/camera_pose`，**全仓无发布者**）
+  配对 ⇒ `depthPoseCallback` 永不触发 ⇒ line 719/1000 的 `occ_need_update_` 永不为真
+  ⇒ **栅格图恒空、ego 全程盲飞**（所有"擦边撞树"现象的总根因）。
+  上游同源对照可证：`advanced_param.xml:123`=1（该档 `~grid_map/pose` 接
+  VINS/真值 pose）、`advanced_param_exp.xml:122`=2（深度实飞档）——本 ws 属深度档，
+  应为 2。**注意不要混入「补丁」表**：这是本 ws 自己的配置，非 vendored 代码改动。
+  全程法证与验收见 `docs/ego_blind_flight_case.md`。
+- **感知修正臂注入点（2026-10-06）**：新增两个 arg，从 `gazebo.launch` →
+  `stack_nodes.launch` → `ego.launch` → `advanced_param_zx.xml` 贯穿（与既有
+  `inflation` 同链）：
+  - `ground_filter`（默认 `0.0` = 关）→ `grid_map/ground_filter_margin`（补丁 5）
+  - `ray_length`（默认 `4.5` = 母本）→ `grid_map/max_ray_length`，并以 `$(eval
+    float(arg('ray_length')) + 0.5)` / `+1.0` **同步派生** `depth_filter_maxdist`
+    与 `local_update_range_x/y`——母本三件套（4.5 / 5.0 / 5.5）必须同动，任缺其一
+    视距都不变（射线裁剪 `:380-384` 与半径外复位 `:488-493` 各自独立设限）。
+  - 已用 `roslaunch --dump-params` 双向验收：默认档 = 4.5/5.0/5.5/0.099/0.0
+    （逐项等于旧口径）；`ray_length:=8.0` → 8.0/8.5/9.0 ✓。
+- **`depth_mindist`（默认 `0.45`，**非**母本 0.2）→ `grid_map/depth_filter_mindist`
+  （2026-10-06 自桨幻影定谳修）**。母本值是 0.2，注释还写着「与插件 near clip 0.30
+  兼容」——**这正是病根**：near clip 只裁掉比它**近**的几何，比它**远**的照渲染。
+  本机型桨叶是 `r=0.10` 的圆盘、中心在 `(±0.24, ±0.24, +0.062)`
+  （`world_builder.py:356-364`）⇒ 外缘伸到 **0.44 m**，其中落在 87° 半视场内的
+  内侧象限正好在 **[0.30, 0.40] m**——**无人机把自己的桨画成了贴身障碍格**。
+  `drone_depth_sensor()` 的注释「最大前伸=机臂尖 0.12+桨 0.10=0.22 < near clip
+  ⇒ 自遮挡免疫」**两处错**：把机臂**半长** 0.12 当成臂尖（实际桨心 0.24），且误以为
+  「近于 near clip ⇒ 不可见」。实测（无任务探针，`~/ego_depth_frame_dump.py`）：
+  每帧 **132 px @[0.25,0.32) + 54 px @[0.32,0.40)**，drone_0 与 drone_3 **逐字相同**
+  ⇒ 体固定签名（非场景内容）；投影成体素后是 **3 个占据格 @ 距机心 0.303 m、
+  z=1.04（机心 z=1.00）**，两机同样逐字相同（`~/ego_occ_near.py` 实测 0.303/0.303）。
+  **后果链**：自格距机心 0.303 m ⇒ 膨胀半径 ≥ 0.3 时膨胀体吞掉机心本身 ⇒
+  `getInflateOccupancy(机心)!=0` ⇒ `bspline_optimizer.cpp:1243` 全程拒停（自囚）；
+  膨胀 0.099 时最近膨胀格 = 0.303−0.1 = **0.203 m**（实测 0.204 ✓），即**机头两侧
+  常驻两团幻影障碍**——这才是 H0 那个「`dmin_inf` 恒 0.13–0.26」的真身（原判
+  「贴着膨胀边界飞」作废）。
+  **修复**：`depth_mindist = 0.45`（自格物理上限 0.40 之上）。修后同探针实测
+  `min|occ| = 1.201 m`、1 m 内 0 格（最近的是真实场景物）。**纯配置，零代码改动**。
+  语义与真机一致：真 D435 近距有盲锥（插件自己也声明 `pointCloudCutoff 0.30`），
+  且实机相机装在机头，桨叶根本不在深度视场内。
+  代价：0.45 m 内不设障——但碰撞判据半径就是 0.35 m，`[0.35,0.45]` 只剩 0.1 m
+  预警带，而实测深度帧率仅 2.8–3.5 Hz（2 m/s 下一帧走 0.6–0.7 m），该带无信息量。
 - **接线复核（2026-10-05 Phase 0.5）**：`ego_planner_node.cpp:12` 与
   `traj_server.cpp:237` 的 main 均为 `NodeHandle nh("~")` 私有句柄——代码里的
   相对名（`planning/bspline`、`odom_world`）实际解析为节点私有名，与

@@ -15,13 +15,49 @@
   <arg name="max_vel" default="2.0" doc="对齐 competition_rules max_vel"/>
   <arg name="max_acc" default="6.0" doc="fd250 母本默认"/>
   <arg name="planning_horizon" default="7.5" doc="母本：≈1.5x 感知半径"/>
+  <arg name="inflation" default="0.099" doc="grid_map 障碍膨胀；A/B 注入点（E1=0.45）"/>
+  <arg name="ground_filter" default="0.0" doc="地面滤阈值(m)；0=关（母本行为）"/>
+  <arg name="ray_length" default="4.5" doc="感知视距(m)；母本 4.5，派生 depth_maxdist/lur_xy"/>
+  <!-- depth_mindist：深度近距截断(m)。母本 0.2，但本机型桨叶外缘伸到 0.44 m 且
+       在 D435 半视场内 ⇒ 0.2 会把「自己的桨」当障碍画进图（机体固定签名，实测
+       每帧 186 px @0.30-0.40 m）。0.45 = 该自格的物理上限以上，见 VENDORED.md 补丁 6。 -->
+  <arg name="depth_mindist" default="0.45" doc="深度近距截断(m)；母本 0.2，本机型须 0.45"/>
+  <!-- p_hit：栅格图命中似然（母本 0.65）。确认时延旋钮——每格每帧只加一次 log-odds，
+       6 帧才认障碍，0.90 缩到 2 帧。默认 0.65 = 母本 = 零行为变更（A/B 注入点）。 -->
+  <arg name="p_hit" default="0.65" doc="栅格图命中似然；0.65=母本，0.90=2 帧快确认"/>
+  <!-- global_route：全局路由器臂（2026-10-06 碰撞治理案 R 臂，默认关）。
+       开 = 起 global_route_node.py，且把 ego 的 goal 入口从 mission 直发的
+       /planning/goal 改接路由器输出 /planning/route_goal。
+       **一个开关原子生效**：不存在「起了节点但 ego 还听 mission」的半开态。
+       关 = 逐字节旧行为（节点不起、goal_topic 仍是 mission 话题）。 -->
+  <arg name="global_route" default="false"/>
+  <!-- goal_topic：**纯字面缺省**，不用 $(eval)。原设计的 eval 条件式在
+       roslaunch 参数 dump 隔离探针里**不随 CLI 覆盖切换**（global_route:=true
+       仍解析出 /drone_5/planning/goal），一旦真 launch 同样失灵 ⇒ 六机拿不到 goal
+       ⇒ 全冻。改为：缺省 = 基线话题；R 臂由 stack_nodes.launch 在每个 include 点
+       用 arg-if（带 if 属性的 arg 标签）传**字面**逐机话题覆盖。
+       好处 = 静态可 grep、无替换语义、关臂时该 arg 根本不出现（逐字节旧行为）。 -->
+  <arg name="goal_topic" default="/drone_$(arg drone_id)/planning/goal"/>
 
   <include file="$(find ego_zx)/config/advanced_param_zx.xml">
     <arg name="drone_id" value="$(arg drone_id)"/>
     <arg name="max_vel" value="$(arg max_vel)"/>
     <arg name="max_acc" value="$(arg max_acc)"/>
     <arg name="planning_horizon" value="$(arg planning_horizon)"/>
+    <arg name="inflation" value="$(arg inflation)"/>
+    <arg name="ground_filter" value="$(arg ground_filter)"/>
+    <arg name="ray_length" value="$(arg ray_length)"/>
+    <arg name="depth_mindist" value="$(arg depth_mindist)"/>
+    <arg name="p_hit" value="$(arg p_hit)"/>
+    <arg name="goal_topic" value="$(arg goal_topic)"/>
   </include>
+
+  <!-- 全局路由器（R 臂）：订阅 mission 的 /planning/goal，A* 绕障后逐点重发
+       route_goal。纯 rospy 系统 python3。OFF 臂不起此节点。 -->
+  <node if="$(arg global_route)" pkg="ego_zx" type="global_route_node.py"
+        name="global_route_$(arg drone_id)" output="log">
+    <param name="drone_id" value="$(arg drone_id)"/>
+  </node>
 
   <!-- 轨迹服务器：PositionCommand @100Hz（traj_server.cpp:243）。
        补丁 1（VENDORED.md）后 advertise 为相对名，remap 生效——

@@ -9,5 +9,6 @@ catkin_package()
 # 注意：UNC 编辑会掉 exec bit——提交前必须 chmod +x（见工作区纪律）。
 install(PROGRAMS
   scripts/ego_bridge_node.py
+  scripts/global_route_node.py
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )

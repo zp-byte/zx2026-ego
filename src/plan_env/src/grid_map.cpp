@@ -52,6 +52,9 @@ void GridMap::initMap(ros::NodeHandle &nh)
 
   node_.param("grid_map/odom_depth_timeout", mp_.odom_depth_timeout_, 1.0);
 
+  // arena 适配（2026-10-06）：地面滤阈值，米（相对 ground_height_）。默认 0 = 关。
+  node_.param("grid_map/ground_filter_margin", mp_.ground_filter_margin_, 0.0);
+
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
@@ -266,14 +269,19 @@ void GridMap::projectDepthImage()
              u += mp_.skip_pixel_)
         {
 
-          depth = (*row_ptr) * inv_factor;
+          // 2026-10-06 修 off-by-one：母本先把 row_ptr 前移再判 *row_ptr == 0，
+          // 与上一行取到的 depth 不是同一个像素 ⇒ 「当前像素有效、右邻为 0」时
+          // 把真障碍点当空点丢弃（本图 52% 像素为 0/NaN ⇒ 约半数有效点被吞）。
+          // 改为先取值判零、再前移。
+          const uint16_t raw_depth = *row_ptr;
+          depth = raw_depth * inv_factor;
           row_ptr = row_ptr + mp_.skip_pixel_;
 
           // filter depth
           // depth += rand_noise_(eng_);
           // if (depth > 0.01) depth += rand_noise2_(eng_);
 
-          if (*row_ptr == 0)
+          if (raw_depth == 0)
           {
             depth = mp_.max_ray_length_ + 0.1;
           }
@@ -295,6 +303,16 @@ void GridMap::projectDepthImage()
           // if (!isInMap(pt_world)) {
           //   pt_world = closetPointInMap(pt_world, md_.camera_pos_);
           // }
+
+          // arena 适配（2026-10-06）：地面滤。水平前视相机在巡航高度看得见地面
+          // （z=2.4 时地面在 4.3 m 处进视场下沿），实测地面占 occ 图 61%。
+          // 地面留在图里无害于避障，但被膨胀后抬起一张"地板"：膨胀半径一旦
+          // ≥ 机身半径（0.35 m ⇒ 4 格 = 0.4 m），起飞/低飞段的机心就落在膨胀
+          // 地面内部 ⇒ grid_map 判定 "in obstacle" ⇒ 规划器全程拒停（自囚）。
+          // margin ≤ 0 时为 no-op，逐字节保持母本行为。
+          if (mp_.ground_filter_margin_ > 0.0 &&
+              pt_world(2) < mp_.ground_height_ + mp_.ground_filter_margin_)
+            continue;
 
           md_.proj_points_[md_.proj_points_cnt++] = pt_world;
 

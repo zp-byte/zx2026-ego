@@ -17,22 +17,21 @@ import yaml
 
 SDF = sys.argv[1] if len(sys.argv) > 1 else "/mnt/d/gazebo_forest/forest_poplar.sdf"
 OUT = (sys.argv[2] if len(sys.argv) > 2 else
-       "/home/ubuntu/zx2026_defop_ws/src/zx2026_common/config/forest_poplar_table.yaml")
+       "/home/ubuntu/zx2026_ego_ws/src/zx2026_common/config/forest_poplar_table.yaml")
 
 DROP_CLEAR = 1.6          # 平台位要求的最小树干表面净空 (m)
 DROP_TARGETS = [(27.0, -9.0), (27.0, 0.0), (27.0, 9.0)]   # 东林缘一列
 
 # 真枝碰撞模板（tools/extract_poplar_branches.py 从网格生成器逐行重放抽出）。
 # 与树表同放 config 目录 ⇒ Scene 复用 _load_tree_table 的同一条解析惯例即可找到。
-# 文件不存在则**不写该 meta 键**（Scene 便不实例化枝）：宁可少一条枝，也不留一个
-# 指向空文件、跑到实弹才炸的悬空引用。
-BRANCH_FILE = "forest_poplar_branches.json"
-CROWN_COLLIDABLE = False  # 用户裁决 2026-10-02 晚：冠物理、视觉都删，只留树枝
-                          # （推翻同日上半天「冠=物理存在」、及 10-01「去碰撞冠」）。
-                          # 树体 = 干 + 真枝两件套，四层（物理/判官/点云/深度）
-                          # 同口径。冠视觉另在 world_builder v_leaf（已同批删）。
+# 【2026-10-07 换场】本档**无真枝** ⇒ BRANCH_FILE 置 None，不写 branch_file 键。
+BRANCH_FILE = None
+CROWN_COLLIDABLE = True   # 用户裁决 2026-10-07：换场至 zx2026_ws（arena）场景，
+                          # 全恢复含叶视觉（正式反转 10-02「冠物理、视觉双删」）。
+                          # 树体 = 干 c_trunk + 冠 c_crown + wood mesh + leaf mesh，
+                          # 四层（物理/判官/点云/深度）同口径，无真枝。
                           # 本常量是重生成树表时写 meta 的唯一来源，翻它才不会被
-                          # 下次 import 把 crown_collidable 写回 true。
+                          # 下次 import 把 crown_collidable 写回 false。
 
 
 def parse_cylinder(col):
@@ -114,12 +113,15 @@ def main():
     # 物理口径两键（见文件头 BRANCH_FILE/CROWN_COLLIDABLE 注释）。
     # 老表无此二键 ⇒ Scene 走旧路径（有碰撞冠、无枝），逐位旧行为。
     meta["crown_collidable"] = CROWN_COLLIDABLE
-    brpath = os.path.join(os.path.dirname(OUT), BRANCH_FILE)
-    if os.path.exists(brpath):
-        meta["branch_file"] = BRANCH_FILE
-        print("branch_file=%s（枝模板就位）" % BRANCH_FILE)
+    if BRANCH_FILE:
+        brpath = os.path.join(os.path.dirname(OUT), BRANCH_FILE)
+        if os.path.exists(brpath):
+            meta["branch_file"] = BRANCH_FILE
+            print("branch_file=%s（枝模板就位）" % BRANCH_FILE)
+        else:
+            print("!! 无 %s ⇒ 表不挂 branch_file（本表将无枝碰撞）" % BRANCH_FILE)
     else:
-        print("!! 无 %s ⇒ 表不挂 branch_file（本表将无枝碰撞）" % BRANCH_FILE)
+        print("BRANCH_FILE=None ⇒ 本档无真枝，表不挂 branch_file")
 
     doc = dict(meta=meta, trees=trees)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)

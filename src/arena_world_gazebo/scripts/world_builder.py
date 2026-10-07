@@ -11,7 +11,10 @@ import math
 import os
 import sys
 
-_WS = "/home/ubuntu/zx2026_defop_ws"
+# ⚠ 生成器自持（2026-10-07 换场）：此前本文件是 defop_ws 的副本，_WS 硬编码指向
+# defop_ws，故 ego 的表/Scene/mesh URI 实际全来自 defop_ws —— 改 ego 自己的表不起作用。
+# 收归本仓后，ego 的场景与 defop/arena 线解耦，改动不外溢。
+_WS = "/home/ubuntu/zx2026_ego_ws"
 sys.path.insert(0, os.path.join(_WS, "src/zx2026_common/scripts"))
 sys.path.insert(0, os.path.join(_WS, "src/arena_world_gazebo/scripts"))
 
@@ -20,9 +23,9 @@ from zx2026_common.scene import Scene
 OUT = os.path.join(os.path.dirname(__file__), "..", "worlds", "forest_world.world")
 
 # 杨树林 mesh（table 场景视觉；STL 由 tools/import_poplar_sdf.py 配套拷入）
-MESH_URI = "file:///home/ubuntu/zx2026_defop_ws/src/arena_world_gazebo/meshes/poplar"
+MESH_URI = "file:///home/ubuntu/zx2026_ego_ws/src/arena_world_gazebo/meshes/poplar"
 # 云杉林 mesh（DeFoP 原林资产；整树 dae，纹理随目录）
-MESH_URI_SPRUCE = "file:///home/ubuntu/zx2026_defop_ws/src/arena_world_gazebo/meshes/spruce"
+MESH_URI_SPRUCE = "file:///home/ubuntu/zx2026_ego_ws/src/arena_world_gazebo/meshes/spruce"
 
 # 平台色板（唯一色表；权威源=scene.color_map/dp.color 的颜色名，此处只做名字→RGB）
 PLATFORM_COLORS = {
@@ -150,20 +153,34 @@ def branch_collisions(ob, origin_z=0.0):
 
 
 def tree_model_poplar(oid, ob):
-    """杨树（table 场景）：wood STL 视觉（干+枝）+ 真枝碰撞（table meta 驱动）。
+    """杨树（table 场景）：wood STL 视觉（干+枝）+ 叶 STL 视觉 + 冠包络碰撞。
 
     口径沿革：
       · 10-01 只去碰撞冠（冠仅视觉）；
       · 10-02 上半天用户裁决「冠=物理存在」⇒ 干+真枝+冠三件套；
-      · **10-02 晚用户裁决「冠物理、视觉都删掉，只保留树枝」⇒ 冠两路全删**：
-        物理侧由表 meta `crown_collidable=false` 断（不发 c_crown，且
-        `Scene._crown_z_range` 返回 None = 四层同灭，gz 物理 == py Scene ==
-        A* 占用，不会「物理不挡、判官却报」）；**视觉侧在本函数直接不拼
-        v_leaf**（`tree_<v>_leaves.stl`），故冠彻底不存在。
-      · 树体最终 = 干 c_trunk + wood mesh（干+枝）+ 真枝段碰撞（与 wood
-        mesh 同源）。「真枝」是唯一的上方结构。
-    杠杆语义（键保留为回滚/换场开关）：crown_collidable=True ⇒ 恢复冠包络
-    圆柱碰撞；但**冠视觉不随该键回来**——回滚视觉须恢复下方 v_leaf 两行。
+      · 10-02 晚用户裁决「冠物理、视觉都删掉，只保留树枝」⇒ 冠两路全删；
+      · **10-07 用户裁决换场至 zx2026_ws（arena）场景，全恢复含叶视觉**
+        （正式反转 10-02 裁决）：冠包络碰撞由表 meta `crown_collidable=true`
+        开回（发 c_crown，且 `Scene._crown_z_range` 同步给出区间 = 四层同源），
+        叶视觉在本函数拼回 v_leaf（`tree_<v>_leaves.stl`）；真枝由表缺
+        `branch_file` 键而断源（不发 c_branch）。
+      · 树体 = 干 c_trunk + 冠 c_crown + wood mesh + leaf mesh + 0 根真枝。
+    杠杆语义（键保留为回滚/换场开关）：crown_collidable 控物理冠；叶视觉是
+    本函数的直拼，不随任何键。
+    ⚠ **叶 mesh 不是「纯观赏件」——它进了 Gazebo 真实相机传感器的渲染路径**
+    （2026-10-07 受控实测定谳，见下）。两条相机链要分清：
+      · **合成链**（`camera_render` / depth_sim，读 `Scene`）：Scene 里**没有叶的
+        表示** ⇒ 看不到叶，速率与叶无关（实测有叶/无叶均 11.9 Hz，纹丝不动）；
+      · **Gazebo 传感器链**（`drone_depth_sensor()` 的 D435 depth，本文件 :424）：
+        **渲染真实几何** ⇒ 叶的面数直接吃它的帧率。
+    ⚠⚠ **换场那次就是栽在这里**：原始叶 mesh 约 4100 面/棵 × 203 棵 ≈ 83 万面，
+    把 ego 臂**独有**的 D435 深度相机从 2.28 Hz 打到 **0.595 Hz**，而
+    `grid_map/odom_depth_timeout = 1.0 s` ⇒ 帧间隔 1.68 s ≫ 1.0 s ⇒
+    `ego_replan_fsm` 每拍打 `Depth Lost! EMERGENCY_STOP`（单局 11966 条）⇒
+    六机全程急停、零碰撞零落地。**arena 自己跑不受影响，因为它没有深度传感器。**
+    ⇒ 叶 mesh 已抽稀到 **64 面/棵**（`tools/decimate_leaf_mesh.py`，顶点聚类），
+    实测深度回到 **2.25 Hz**（≈ 无叶档 2.28 Hz 的 99%）。**改这两个 mesh 前先读
+    该工具的 docstring，别再往深度相机里塞面。**
     """
     vi = ob.mesh_variant
     s = ob.mesh_scale or 1.0
@@ -186,10 +203,10 @@ def tree_model_poplar(oid, ob):
     # 真枝碰撞：模型 pose z=0（原点在地面），故 origin_z=0
     wood_vis = ('<visual name="v_wood"><geometry>%s</geometry>%s</visual>'
                 % (mesh("wood"), mat(0.45, 0.31, 0.19)))
-    # 冠视觉 v_leaf（tree_<v>_leaves.stl）已删【2026-10-02 用户裁决】——
-    # 树体只剩 wood mesh（干+枝）；如回滚须恢复这两行并同改 regen_world.sh
-    # 的 mesh/棵（杨树 1 → 2）。
-    body = "\n    ".join(x for x in (wood_vis, trunk_col, crown_col,
+    # 冠视觉 v_leaf（tree_<v>_leaves.stl）：2026-10-07 换场恢复（反转 10-02 裁决）。
+    leaf_vis = ('<visual name="v_leaf"><geometry>%s</geometry>%s</visual>'
+                % (mesh("leaves"), mat(0.22, 0.47, 0.16)))
+    body = "\n    ".join(x for x in (wood_vis, leaf_vis, trunk_col, crown_col,
                                      branch_collisions(ob, 0.0)) if x)
     return """<model name="tree_%d">
   <static>true</static>
@@ -387,14 +404,33 @@ def drone_model(i, x, y):
 def drone_depth_sensor(i):
     """D435 前视深度相机（ego 路线 2026-10-05，docs/EGO_DESIGN.md §三）。
 
+    ⚠ **本传感器是「渲染成本传感器」，帧率被场景三角面数直接决定**
+    （2026-10-07 受控实测，详见 `tree_model_poplar` docstring）：请求
+    `update_rate=15.0`，实际帧率随场景几何走 —— 叶 mesh 4100 面/棵时只有
+    0.595 Hz，抽稀到 64 面/棵后回到 2.25 Hz。而 `grid_map/odom_depth_timeout
+    = 1.0 s`（grid_map.cpp:53）是硬门：帧间隔一旦越过 1.0 s，`ego_replan_fsm`
+    每拍打 `Depth Lost! EMERGENCY_STOP`，全机队永久急停。
+    ⇒ **往场景里加渲染几何前，先量本话题的 Hz。** 6 台机各一个深度相机，
+    成本是叠加的。
+
     - 真加 Gazebo depth sensor；ROS 桥用 libgazebo_ros_openni_kinect.so
       （FUEL/ego-planner 官方 sim 同款，XTDrone 同参数表）。
       Phase 0.5 v5 定谳：libgazebo_ros_camera.so 不读 depthImage* 参数
       （strings 全空，depth 专用参数只在 depth_camera/kinect 两个 .so）——
       旧配置深度话题从未被创建，是零帧第一病根。
-    - 装机体系原点平视（pose 全 0）：own visuals 最大前伸=机臂尖 0.12+桨
-      0.10=0.22 < near clip 0.30 ⇒ 自遮挡免疫；cam2body_（grid_map.cpp:95
-      硬编码，平移零）不破，plan_env 零改动。
+    - 装机体系原点平视（pose 全 0）：cam2body_（grid_map.cpp:95 硬编码，平移零）
+      不破，plan_env 零改动。
+      ⚠️ **2026-10-06 订正：原注释写「own visuals 最大前伸=机臂尖 0.12+桨 0.10=0.22
+      < near clip 0.30 ⇒ 自遮挡免疫」——两处错**：(a) 把机臂**半长** 0.12 当成臂尖，
+      桨盘中心其实在 (±0.24, ±0.24)（见 `_drone_visuals`：`tx,ty = dx*0.24, dy*0.24`），
+      盘 r=0.10 ⇒ 外缘伸到 **0.44 m**；(b) **near clip 只裁掉比它「近」的几何，
+      比它「远」的照渲染**——所以「小于 clip」≠「不可见」。实测：桨盘落在 87°
+      半视场内的内侧象限正好在 **[0.30, 0.40] m**，每帧 186 px 被画成深度图回波
+      ⇒ 经 grid_map 变成**距机心 0.303 m 的 3 个占据格**（体固定，两机逐字相同）。
+      该幻影在膨胀 ≥0.3 时吞掉机心致规划器全程拒停。**修法在配置侧：
+      `depth_mindist = 0.45` 把它滤掉**（见 src/VENDORED.md、docs/ego_blind_flight_case.md）。
+      若要改本文件，正解是让自几何进不了视场（相机前移 / 桨不进视锥），
+      但前者会破 cam2body_ 平移零的契约，故本轮不动。
     - 话题契约对齐旧 depth_sim：/drone_<i>/depth/image_raw +
       /drone_<i>/depth/camera_info；RGB 发 image_color 不订。
       注意 kinect 插件无点云开关，points 话题会发（无订阅者时 roscpp
