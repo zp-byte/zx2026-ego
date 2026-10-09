@@ -58,16 +58,8 @@ class LidarNode:
         self.odom_yaw = 0.0
         self.pub = rospy.Publisher(ns + "/cloud", PointCloud2, queue_size=4)
         rospy.Subscriber(ns + "/odom", Odometry, self._on_odom)
-        # 云链总开关（2026-10-05 用户裁决：避障=深度图单源，纯 DeFoP+坐标）：
-        # planner.cloud_nav=off ⇒ 本节点空闲挂起——不 raycast 不发布（省
-        # 0.83s/帧×6 机的真枝 raycast CPU，回流深度链），保 roslaunch 拓扑
-        # （节点在、话题在、零流量）。keep（默认）= 逐字节旧行为。
-        _pl = settings.get("planner", {}) or {}
-        _cn_v = _pl.get("cloud_nav", "keep") if isinstance(_pl, dict) else None
-        self.cloud_nav = not (_cn_v is False or str(_cn_v).strip().lower() == "off")
-        rospy.loginfo("lidar_node: drone %d range=%.1f cloud_nav=%s",
-                      self.drone_id, self.range,
-                      "keep" if self.cloud_nav else "off(idle)")
+        rospy.loginfo("lidar_node: drone %d range=%.1f",
+                      self.drone_id, self.range)
 
     def _on_odom(self, msg):
         p = msg.pose.pose.position
@@ -77,12 +69,6 @@ class LidarNode:
                                    1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def run(self):
-        if not self.cloud_nav:
-            # cloud_nav=off：空闲挂起（回调线程照活，零 raycast 零发布）。
-            rospy.loginfo("lidar_node: drone %d idle (cloud_nav=off)",
-                          self.drone_id)
-            rospy.spin()
-            return
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             self._publish()

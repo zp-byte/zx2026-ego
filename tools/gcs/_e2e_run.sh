@@ -1,10 +1,10 @@
 #!/bin/sh
 # 合并后离线 E2E：hub(--scene) + fake 两测 + 面板 selftest + FR 全路径 feeder
 set -u
-cd /home/ubuntu/zx2026_defop_ws/tools/gcs || exit 1
+cd /home/ubuntu/zx2026_arena_ws/tools/gcs || exit 1
 OUT=/mnt/c/Users/24882/Desktop/_gcs_e2e.txt
 : > "$OUT"
-SCENE=/home/ubuntu/zx2026_defop_ws/src/zx2026_common/config/scene_topology.yaml
+SCENE=/home/ubuntu/zx2026_arena_ws/src/zx2026_common/config/scene_topology.yaml
 
 # 清场（防残留 hub/panel 占 9870/读旧 status）
 pkill -f gcs_hub.py 2>/dev/null; pkill -f gcs_panel.py 2>/dev/null

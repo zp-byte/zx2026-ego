@@ -2,7 +2,7 @@
 # 深挖每架无人机状态：完整 mission 字段 + 速度(判断是否在动) + 位置
 export ROS_MASTER_URI=http://127.0.0.1:11411
 source /opt/ros/noetic/setup.bash
-source /home/ubuntu/zx2026_defop_ws/devel/setup.bash
+source /home/ubuntu/zx2026_arena_ws/devel/setup.bash
 
 echo "=== 阶段/时钟 ==="
 timeout 4 rostopic echo -n1 /zx2026/state 2>/dev/null | grep data | head -1

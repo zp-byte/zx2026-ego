@@ -51,27 +51,20 @@ def _slot_clearance(scene, x, y, z_lo, z_hi):
     """点 (x,y) 在 z 带 [z_lo,z_hi] 内对全部占用障碍的最小表面净空（m）。
 
     与 Scene.collides_xy 同一障碍集合（fence/marker 低于巡航高度不算）：
-    树=树干圆盘 ∪ 冠包络圆盘（各按自身 z 带重叠与否）的表面距离，
-    其余=AABB 盒表面距离。空场返回极大值。
+    树=树干圆盘表面距离，其余=AABB 盒表面距离。空场返回极大值。
     """
     best = 1e9
     for ob in scene.obstacles:
         if ob.kind in ("fence", "marker"):
             continue
         if ob.kind == "tree":
-            gz = scene.venue["ground_z"]
-            dxy = math.hypot(x - ob.cx, y - ob.cy)
-            if not (gz + ob.trunk_h < z_lo or gz > z_hi):
-                best = min(best, dxy - ob.trunk_r)
-            zr = scene._crown_z_range(ob)
-            if zr is not None and not (zr[1] < z_lo or zr[0] > z_hi):
-                best = min(best, dxy - ob.crown_r)
-            continue
-        if ob.hi[2] < z_lo or ob.lo[2] > z_hi:
-            continue
-        dx = max(ob.lo[0] - x, 0.0, x - ob.hi[0])
-        dy = max(ob.lo[1] - y, 0.0, y - ob.hi[1])
-        d = math.hypot(dx, dy)
+            d = math.hypot(x - ob.cx, y - ob.cy) - ob.trunk_r
+        else:
+            if ob.hi[2] < z_lo or ob.lo[2] > z_hi:
+                continue
+            dx = max(ob.lo[0] - x, 0.0, x - ob.hi[0])
+            dy = max(ob.lo[1] - y, 0.0, y - ob.hi[1])
+            d = math.hypot(dx, dy)
         if d < best:
             best = d
     return best
@@ -196,12 +189,6 @@ class MissionExecutor:
         self.identify_z = float(h.get("identify_z", 1.2))
         self.drop_hover_z = float(h.get("drop_hover_z", self.identify_z))
         self.touchdown_z = float(h.get("touchdown_z", 0.12))
-        # ---- 林带巡航高度解绑（2026-10-01）。缺键或关 = 逐字节旧行为 ----
-        # cruise_free 开 = 巡航腿 goal z 取"当时高度"（保持），不再拉到
-        # cruise_z；belt_entry_z = 开时唯一显式高度（进林带/回收）。
-        self._cruise_free = bool(h.get("cruise_free", False))
-        self.belt_entry_z = float(h.get("belt_entry_z", self.takeoff_hover_z))
-
         self.arrival_tol = float(h.get("area_arrival_tol", 2.0))
         self.drop_tol = float(h.get("drop_arrival_tol", 0.8))
         # 精投放到位阈值：RECON GOTO_LO 用（释放偏移=S1 判平台余量，
@@ -225,15 +212,6 @@ class MissionExecutor:
         self._cid_nframes = int(ci.get("n_frames", 3))
         self._cid_rounds = int(ci.get("max_scan_rounds", 2))
         self._cid_leg_timeout = float(ci.get("scan_leg_timeout_s", 45.0))
-        # ---- W1 进度感知腿看门狗（2026-09-30）----------------------------
-        # 病灶：DeFoP 链 8 核上实际地速 ~0.8m/s（cmd_velocity 1.3 是名义值），
-        # 跨林首腿实需 ~62s，而 scan_leg_timeout_s=45 是纯时间上限——跑满即跳。
-        # seed43 实测：五机首腿 t=81-90 全被砍，LOCK 推到 173s，返航无预算。
-        # 改法：推进就放行、停滞就早退。stall_s=0 关闭 -> 逐字节回退旧行为。
-        # 只作用于 GOTO_HI：GOTO_LO 的静止是故意等入场门/让位仲裁。
-        self._cid_leg_stall_s = float(ci.get("scan_leg_stall_s", 0.0))
-        self._cid_leg_stall_eps = float(ci.get("scan_leg_stall_eps", 0.30))
-        self._cid_leg_cap_s = float(ci.get("scan_leg_cap_s", 90.0))
         # SCAN 入场稳定门（P0-1 第二刀，run15' 法证）：GOTO_HI→GOTO_LO 在
         # d<drop_tol 即边飞边转下降，位置门（est 0.62/0.35）在摆动弧上被穿过
         # → MATCH/释放发生在未收敛摆动弧上（release x 全部偏东=来向过冲，
@@ -314,14 +292,11 @@ class MissionExecutor:
         self._nav_arrived = False     # nav 真值到位信号（arrive_gate 用）
         self._scan_until = 0.0
         self._scan_leg_t0 = 0.0
-        self._scan_stall_ref = None   # W1 停滞判据参考点（机体 xy 位移口径）
-        self._scan_prog_t0 = 0.0      # W1 上次刷新最优的时刻（停滞判据基准）
         self._sel_state = None
         # 同平台排队仲裁：规则口径每平台 2 箱 → 同色双机必锁同平台，按"先到先投"
         # 排队（他机已认领未完成 → 本机在平台侧偏移点+巡航高度避让等待）
         self._claims = {}          # drone_id → selected bucket_id（全部机）
         self._done_set = set()     # 已完成投放的机（payload/done）
-        self._retired_set = set()  # 已退赛的机（rule/retire，2026-09-30：退赛即交还平台）
         self._nb_pos = {}          # drone_id → (x,y,z) 邻居真值位置（让位仲裁）
 
         # 穿越区强制通过
@@ -340,26 +315,6 @@ class MissionExecutor:
                                                queue_size=10)
         rospy.Subscriber(ns + "/odom", Odometry, self._on_odom)
         rospy.Subscriber(ns + "/nav/arrived", Bool, self._on_nav_arrived)
-        # pen_authority_case 刀一（2026-10-04）：起飞闸门（仅 cpn_forever 生
-        # 效）。CPN 暖机旗（models+odom/depth/latent 各一帧）到达前不解锁起
-        # 飞——否则 CPN 未热即起飞=任务层裸奔进林（真空家族：R3 d3 CPN 首拍
-        # 晚 ~20s，52.6-57.7 三撞全在首拍前）。默认 nav 模式零行为变更。
-        _pl = cfg.load("sim_settings.yaml").get("planner", {}) or {}
-        if not isinstance(_pl, dict):
-            _pl = {}
-        self._pen_forever = (str(_pl.get("source", "internal")) == "defop"
-                             and str(_pl.get("pen_authority", "nav"))
-                             == "cpn_forever")
-        # 云链总开关（2026-10-05 裁决：避障=深度图单源）：off ⇒ via_slots
-        # 不订 /cloud（占用格恒空=槽位全净空，几何确定性选槽，不泄漏真值）。
-        # YAML 1.1：裸 off 解析为布尔 False（同 nav 侧注释），off 判别双接。
-        _cn_v = _pl.get("cloud_nav", "keep")
-        self._cloud_nav = not (_cn_v is False or str(_cn_v).strip().lower() == "off")
-        self._cpn_warm = False
-        self._warm_deadline = None
-        if self._pen_forever:
-            rospy.Subscriber(ns + "/planning/cpn_warm", Bool,
-                             self._on_cpn_warm, queue_size=1)
         rospy.Subscriber("/zx2026/mission/%d" % self.drone_id, Mission, self._on_mission)
         rospy.Subscriber("/zx2026/state", String, self._on_state)
         rospy.Subscriber(ns + "/match/result", String, self._on_match)
@@ -377,11 +332,6 @@ class MissionExecutor:
                              lambda m, j=j: self._on_other_done(j, m))
             rospy.Subscriber("/drone_%d/odom" % j, Odometry,
                              lambda m, j=j: self._on_nb_odom(j, m))
-            # 邻居退赛（2026-09-30）：退赛机须交还平台，否则死机以
-            # 最后位置永久占位——让位仲裁把它当低层占用者，认领表留着它的认领，
-            # 同平台他机白等到 wait 超时（seed43 d5 实测白等 90s）。
-            rospy.Subscriber("/drone_%d/rule/retire" % j, String,
-                             lambda m, j=j: self._on_other_retire(j, m))
         # GCS panic 通道（第 4 步 ②）：全局急停，全部 executor 各自进入 ABORT 终态
         rospy.Subscriber("/zx2026/abort", String, self._on_abort)
         # 比赛合规通道（P5 rule_monitor）：退赛裁决 → hover-lock 终态 RETIRED
@@ -391,9 +341,7 @@ class MissionExecutor:
         rospy.Subscriber(ns + "/collision", Bool, self._on_collision)
         # 诚实化 via_slots（2026-09-23）：cloud 模式下订阅本机点云累计占用格，
         # 选槽净空只认自己看过的世界（真值 Scene 不参与）
-        # cloud_nav=off（2026-10-05）：不订——占用格恒空=槽位全净空。
-        if self._vs_enabled and self._vs_source == "cloud" \
-                and self._cloud_nav:
+        if self._vs_enabled and self._vs_source == "cloud":
             rospy.Subscriber(ns + "/cloud", PointCloud2, self._on_cloud,
                              queue_size=2)
 
@@ -418,7 +366,7 @@ class MissionExecutor:
                 dp = self._scan_order[self._scan_idx]
                 self._scan_mode = "GOTO_LO"
                 self._lo_stage = 0
-                self._scan_leg_reset()
+                self._scan_leg_t0 = rospy.get_time()
                 self._goto((dp.xyz[0], dp.xyz[1], self.identify_z))
                 rospy.logwarn("drone %d collision in RECON, re-stage descent "
                               "to buffer", self.drone_id)
@@ -477,20 +425,13 @@ class MissionExecutor:
         平台双机中继层分离场互顶（sep 1.5m 顶开 → 末段水平门 0.6 不过
         → 腿超时跳平台 → 轮询白耗 40s+，同色双机完成度退化根因）。
         z 差 <0.1 视同层，drone_id 小者保（确定性仲裁，防双向让位抖动）。
-        landed 停控机 odom 仍发但位置在 pads（远离平台），水平门滤掉。
-
-        **例外（2026-09-30 seed43 法证）**：UNAUTHORIZED_LANDING 的退赛机
-        沉停在平台**本身**（z=0.16、距平台心 0.02m），"位置在 pads" 这条假设
-        不成立——它会以最后位置永久当低层占用者，让同平台他机白等到 wait
-        超时（d5 实测白等 90s）。故 _retired_set 单独剔除，不靠几何。"""
+        landed 停控机 odom 仍发但位置在 pads（远离平台），水平门滤掉。"""
         me = self.odom
         if me is None:
             return None
         for j, p in self._nb_pos.items():
             if p is None:
                 continue
-            if j in self._retired_set:
-                continue     # 退赛机不再算占位者：它不会完成，等它=必死的等待
             dz = me[2] - p[2]
             if abs(dz) < 0.1 and j < self.drone_id:
                 dz = 1.0     # 同层：id 小者保，本机（id 大）视为被压
@@ -505,13 +446,13 @@ class MissionExecutor:
         ——等待机不得落在分离场内，否则悬停机被顶离平台心进不了 SCAN
         （run11 法证：1.2m 等待位把 d0 顶到 0.54 平衡点，腿超时白耗）。"""
         return (dp.xyz[0] + 2.2, dp.xyz[1] + (self.drone_id - 2.5) * 0.9,
-                self._belt_z())
+                self.cruise_z)
 
     def _enter_wait(self, dp, reason, who):
         """转 WAIT_HI 避让：挂巡航高度等待位，等待位不构成对方眼中的
         低层占用（z 高于平台悬停层），被让者照常下降。"""
         self._scan_mode = "WAIT_HI"
-        self._scan_leg_reset()
+        self._scan_leg_t0 = rospy.get_time()
         self._goto(self._wait_pos(dp))
         rospy.logwarn("drone %d RECON platform %d %s drone %d, waiting",
                       self.drone_id, dp.id, reason, who)
@@ -521,9 +462,7 @@ class MissionExecutor:
         返回最小 drone_id 或 None。"""
         holder = None
         for j, b in self._claims.items():
-            if b == dp_id and j != self.drone_id \
-                    and j not in self._done_set \
-                    and j not in self._retired_set:
+            if b == dp_id and j != self.drone_id and j not in self._done_set:
                 if holder is None or j < holder:
                     holder = j
         return holder
@@ -560,24 +499,12 @@ class MissionExecutor:
             self.state = "TAKEOFF_PENDING"
             rospy.loginfo("drone %d takeoff scheduled in %.1fs", self.drone_id,
                           self.drone_id * self.stagger)
-            if self._pen_forever:
-                rospy.loginfo("drone %d takeoff gate: pen_authority=cpn_forever"
-                              " (warm-gated)", self.drone_id)
         elif st == "P4_EXECUTE" and self.state == "TAKEOFF_DONE":
             self.enter_at = rospy.get_time() + self.drone_id * self.entry_stagger
             self.state = "EXECUTE_PENDING"
             self._publish_phase("EXECUTE_PENDING")
             rospy.loginfo("drone %d execute entry scheduled in %.1fs",
                           self.drone_id, self.drone_id * self.entry_stagger)
-
-    def _on_cpn_warm(self, msg):
-        """CPN 暖机旗（latched，pen_authority_case §三.1）：models+odom/
-        depth/latent 三输入就绪 ⇒ 起飞闸门放行。仅 cpn_forever 订阅
-        （默认 nav 模式零行为）。"""
-        if bool(msg.data) and not self._cpn_warm:
-            self._cpn_warm = True
-            rospy.loginfo("drone %d cpn warm -> takeoff gate open",
-                          self.drone_id)
 
     def _release_payload(self):
         """放行投放：位置对准平台心（释放对准门通过）后才发释放指令。"""
@@ -614,7 +541,7 @@ class MissionExecutor:
                 rospy.logwarn("drone %d match timeout, retry %d", self.drone_id, self.retry)
                 self.state = "EXECUTE"
                 self._publish_phase("EXECUTE")
-                self._goto((self.drop[0], self.drop[1], self._belt_z()))
+                self._goto((self.drop[0], self.drop[1], self.cruise_z))
                 self._pending = "DESCEND"
 
     def _on_abort(self, msg):
@@ -632,16 +559,6 @@ class MissionExecutor:
         rospy.logwarn("drone %d ABORT (%s): hover-lock at (%.2f, %.2f, %.2f)",
                       self.drone_id, msg.data, o[0], o[1], o[2])
         self._goto((o[0], o[1], o[2]))
-
-    def _on_other_retire(self, j, msg):
-        """邻居退赛登记（轻量）：只记账，绝不碰自身状态。
-
-        本机的 _on_retire 会改 self.state/hover-lock（那是自己的终态），
-        邻居的退赛只能影响"我还要不要等它/让它"，故单独一条路。"""
-        if j not in self._retired_set:
-            self._retired_set.add(j)
-            rospy.loginfo("drone %d: neighbor %d retired (%s), releasing its platform",
-                          self.drone_id, j, msg.data)
 
     def _on_retire(self, msg):
         """rule_monitor 退赛裁决：复用 ABORT hover-lock，终态 RETIRED。
@@ -667,9 +584,9 @@ class MissionExecutor:
             # 闭环模式爬升悬停点东偏 1.2m：同平台排队者（WAIT→下降柱）与本机
             # 爬升柱物理错开，防"done 即放行"窗口的垂直交错相撞
             if self._cid_enabled:
-                self._goto((self.drop[0] + 1.2, self.drop[1], self._belt_z()))
+                self._goto((self.drop[0] + 1.2, self.drop[1], self.cruise_z))
             else:
-                self._goto((self.drop[0], self.drop[1], self._belt_z()))
+                self._goto((self.drop[0], self.drop[1], self.cruise_z))
             rospy.loginfo("drone %d return scheduled in %.1fs",
                           self.drone_id, self.drone_id * self.return_stagger)
 
@@ -695,29 +612,6 @@ class MissionExecutor:
         p0 = pads[0] if pads else (0.0, 0.0)
         pi = pads[self.drone_id] if self.drone_id < len(pads) else (0.0, 0.0)
         return (float(pi[0]) - float(p0[0]), float(pi[1]) - float(p0[1]), 0.0)
-
-
-    def _belt_z(self):
-        """让位位/投放重试/投放后爬升等"必须回到明确高度"的腿的 goal z。
-
-        这些腿从低处出发（让位位在下降低阶中段、投放后在 ~0.8），"保持当前
-        高度"会把机子焊死在低层，故必须给显式值。开 = belt_entry_z（= 本臂
-        的林带层高）；关 = cruise_z（**逐字节旧行为**，回滚路径靠这条）。
-        """
-        return self.belt_entry_z if self._cruise_free else self.cruise_z
-    def _cruise_z_goal(self):
-        """巡航腿 goal z（键 heights.cruise_free，默认关）。
-
-        开 = 保持当前高度：复用 _on_abort/_on_retire 的"原地保持"惯用法
-        （goal z 设成当时高度），nav 的 z 律 (goal_z-odom_z)*1.5 即变成在
-        该高度上增益 1.5 的阻尼保持——解掉固定巡航高度但不放任漂移。
-        关 = self.cruise_z（逐字节旧行为）。
-
-        快照安全性：EXECUTE_PENDING 只在 state=="TAKEOFF_DONE" 后才开表
-        （_on_state），而 TAKEOFF_DONE 判据是 ||goal-odom||<arrival_tol、
-        goal 即 (pad, takeoff_hover_z)——故取到的是悬停稳态高度，不是爬升瞬态。
-        """
-        return self.odom[2] if self._cruise_free else self.cruise_z
 
     def _goto(self, xyz, formation=False):
         if formation and self.formation_offset is not None:
@@ -785,15 +679,6 @@ class MissionExecutor:
                       len(self._vs_obs_cells), self._vs_source)
         return slot
 
-    def _scan_leg_reset(self):
-        """腿起点统一重置（W1）：腿计时 + 进度证据。
-
-        所有腿边界都走这里——新增状态漏在某个边界重置是本仓一类经典缺陷，
-        收口到单点后不可能漏。"""
-        self._scan_leg_t0 = rospy.get_time()
-        self._scan_stall_ref = None
-        self._scan_prog_t0 = self._scan_leg_t0
-
     def _scan_begin(self):
         """RECON 起扫：逐平台 巡航高度→平台上空 drop_hover_z 的三段腿。
 
@@ -807,11 +692,11 @@ class MissionExecutor:
         self._scan_idx = 0
         self._scan_round = 0
         self._scan_mode = "GOTO_HI"
-        self._scan_leg_reset()
+        self._scan_leg_t0 = rospy.get_time()
         self._sel_state = bucket_select.new_state()
         bx = self._scan_order[0].xyz[0]
         by = self._scan_order[0].xyz[1]
-        self._goto((bx, by, self._cruise_z_goal()))
+        self._goto((bx, by, self.cruise_z))
 
     def _scan_advance(self, skip_reason):
         """推进到下一扫描平台（全扫完→重扫或判失败）。"""
@@ -826,8 +711,8 @@ class MissionExecutor:
                           self.drone_id, self._scan_round, skip_reason)
         nxt = self._scan_order[self._scan_idx]
         self._scan_mode = "GOTO_HI"
-        self._scan_leg_reset()
-        self._goto((nxt.xyz[0], nxt.xyz[1], self._cruise_z_goal()))
+        self._scan_leg_t0 = rospy.get_time()
+        self._goto((nxt.xyz[0], nxt.xyz[1], self.cruise_z))
         return True
 
     def _recon_tick(self, d):
@@ -837,37 +722,7 @@ class MissionExecutor:
         GOTO 腿带超时看门狗（plan_fail 类活锁兜底：跳平台继续扫）。"""
         dp = self._scan_order[self._scan_idx]
         if self._scan_mode in ("GOTO_HI", "GOTO_LO"):
-            now_leg = rospy.get_time()
-            leg_elapsed = now_leg - self._scan_leg_t0
-            if self._scan_mode == "GOTO_HI" and self._cid_leg_stall_s > 0.0:
-                # W1 进度感知看门狗（只作用于 GOTO_HI 长腿）。
-                # 停滞判据 = **机体自身位移**，不是"是否接近 goal"：绕树改道
-                # 时 d 先增后减，用 d 会把合法绕行误判成停滞。nav 层既有卡死
-                # 判据同口径（_stuck: |v_odom|<0.15），本仓一致。
-                # 分工：stall 捕"真卡死"（不动），cap 捕"在动但一直在绕/慢爬"。
-                # 主病灶（0.8m/s 慢，但一直在动）由 cap 取代旧 45s 上限解决。
-                if self._scan_stall_ref is None or \
-                        math.hypot(self.odom[0] - self._scan_stall_ref[0],
-                                   self.odom[1] - self._scan_stall_ref[1]) \
-                        > self._cid_leg_stall_eps:
-                    self._scan_stall_ref = (self.odom[0], self.odom[1])
-                    self._scan_prog_t0 = now_leg
-                if now_leg - self._scan_prog_t0 > self._cid_leg_stall_s:
-                    rospy.logwarn(
-                        "drone %d RECON leg %s to platform %d timeout, "
-                        "skipping (leg_stall %.1fs d=%.2f)",
-                        self.drone_id, self._scan_mode, dp.id,
-                        now_leg - self._scan_prog_t0, d)
-                    self._scan_advance("leg_stall")
-                    return
-                if leg_elapsed > self._cid_leg_cap_s:
-                    rospy.logwarn(
-                        "drone %d RECON leg %s to platform %d timeout, "
-                        "skipping (leg_cap %.0fs d=%.2f)",
-                        self.drone_id, self._scan_mode, dp.id, leg_elapsed, d)
-                    self._scan_advance("leg_cap")
-                    return
-            elif leg_elapsed > self._cid_leg_timeout:
+            if rospy.get_time() - self._scan_leg_t0 > self._cid_leg_timeout:
                 rospy.logwarn("drone %d RECON leg %s to platform %d timeout, skipping",
                               self.drone_id, self._scan_mode, dp.id)
                 self._scan_advance("leg_timeout")
@@ -883,7 +738,7 @@ class MissionExecutor:
             if self._scan_mode == "GOTO_HI":
                 if d < self.drop_tol:
                     self._scan_mode = "GOTO_LO"
-                    self._scan_leg_reset()
+                    self._scan_leg_t0 = rospy.get_time()
                     # 分级下降：先到平台上空 1.2m 缓冲层，经 drop_mid_z 中继
                     # 缓降 drop_hover_z。单段直降 2.5→0.55 的 P 环超调会
                     # 扎进贴地碰撞区（z≈0.35 触平台薄盘弹跳，P4 三跑法证）
@@ -963,7 +818,7 @@ class MissionExecutor:
                 rospy.loginfo("drone %d RECON platform %d freed, descending",
                               self.drone_id, dp.id)
                 self._scan_mode = "GOTO_LO"
-                self._scan_leg_reset()
+                self._scan_leg_t0 = rospy.get_time()
                 self._lo_stage = 0     # 分级下降从缓冲层重新开始
                 self._goto((dp.xyz[0], dp.xyz[1], self.identify_z))
             return
@@ -1036,29 +891,9 @@ class MissionExecutor:
             return  # 急停/退赛后状态机冻结，不再发任何新航点/投放指令
         if self.state == "TAKEOFF_PENDING":
             if self.takeoff_at is not None and rospy.get_time() >= self.takeoff_at:
-                if self._pen_forever and not self._cpn_warm:
-                    # 起飞闸门（pen_authority_case §三.1）：CPN 未暖机前不解
-                    # 锁。超时 fail-open 60s（与 stage_controller P3 超时同
-                    # 型：CPN 死不应冻结全队；放行后由 nav 握手/stall 冻结
-                    # 兜底，logerr 留痕）。暖机正常 ~4-10s，实跑几乎不延时。
-                    if self._warm_deadline is None:
-                        self._warm_deadline = rospy.get_time() + 60.0
-                        rospy.loginfo("drone %d takeoff gate: waiting cpn warm"
-                                      " (max 60s)", self.drone_id)
-                        return
-                    if rospy.get_time() < self._warm_deadline:
-                        return
-                    rospy.logerr_throttle(10.0, "drone %d CPN warm timeout -> "
-                                          "takeoff fail-open", self.drone_id)
                 self.state = "TAKEOFF"
                 self._publish_phase("TAKEOFF")
-                # 【2026-10-01】起飞悬停高度 = 进林带高度的唯一杠杆：cruise_free
-                # 开时 A 类巡航腿"保持当前高度"，保持的就是离台高度，故抬林带
-                # 高度必须从起飞改起（否则 belt_entry_z 只作用于让位/投放后腿）。
-                # 关时逐字节旧值 takeoff_hover_z。RETURN 段的下降悬停不在此列。
-                self._goto((self.pad[0], self.pad[1],
-                            self.belt_entry_z if self._cruise_free
-                            else self.takeoff_hover_z))
+                self._goto((self.pad[0], self.pad[1], self.takeoff_hover_z))
             return
         if self.state == "EXECUTE_PENDING":
             if self.enter_at is not None and rospy.get_time() >= self.enter_at:
@@ -1072,14 +907,14 @@ class MissionExecutor:
                 # 旗关或无可行槽位集时回退原共享点 + formation 偏移（逐位原行为）。
                 slot = self._pick_via_slot() if self._vs_enabled else None
                 if slot is not None:
-                    self._goto((slot[0], slot[1], self._cruise_z_goal()))
+                    self._goto((slot[0], slot[1], self.cruise_z))
                     self._pending = "CROSS_ZONE"
                     rospy.loginfo("drone %d heading to via slot (%.1f, %.1f)",
                                   self.drone_id, slot[0], slot[1])
                 else:
                     # 先飞向穿越区中心（编队协调层：加每机偏移展开成队形），进入后再转向投放点
                     cz = self.scene.crossing_zone_center
-                    self._goto((cz[0], cz[1], self._cruise_z_goal()), formation=True)
+                    self._goto((cz[0], cz[1], self.cruise_z), formation=True)
                     self._pending = "CROSS_ZONE"
                     rospy.loginfo("drone %d heading to crossing zone (%.1f, %.1f)",
                                   self.drone_id, cz[0], cz[1])
@@ -1096,12 +931,12 @@ class MissionExecutor:
                 # 下方 RETURN 态 RETURN_VIA 分支。
                 if self._rr_enabled:
                     vy = self._rr_via_y + self._rr_jitter * ((self.drone_id % 3) - 1)
-                    self._goto((self.drop[0], vy, self._cruise_z_goal()))
+                    self._goto((self.drop[0], vy, self.cruise_z))
                     self._pending = "RETURN_VIA"
                     rospy.loginfo("drone %d RETURN-VIA (%.1f, %.1f)",
                                   self.drone_id, self.drop[0], vy)
                 else:
-                    self._goto((self.pad[0], self.pad[1], self._cruise_z_goal()))
+                    self._goto((self.pad[0], self.pad[1], self.cruise_z))
                     self._pending = "DESCEND_PAD"
                     rospy.loginfo("drone %d return start (cruise to pad)", self.drone_id)
             return
@@ -1132,7 +967,7 @@ class MissionExecutor:
                                       self.drone_id)
                     else:
                         self._pending = "DESCEND"
-                        self._goto((self.drop[0], self.drop[1], self._cruise_z_goal()))
+                        self._goto((self.drop[0], self.drop[1], self.cruise_z))
                         rospy.loginfo("drone %d crossed zone, heading to drop",
                                       self.drone_id)
                 elif d < self.drop_tol:
@@ -1158,7 +993,7 @@ class MissionExecutor:
                 # W2-P1：已到中缝路点（巡航高度）→ 转 pad 上空（两段式后半）
                 if d < self.arrival_tol:
                     self._pending = "DESCEND_PAD"
-                    self._goto((self.pad[0], self.pad[1], self._cruise_z_goal()))
+                    self._goto((self.pad[0], self.pad[1], self.cruise_z))
                     rospy.loginfo("drone %d RETURN-VIA reached, cruise to pad",
                                   self.drone_id)
             elif getattr(self, "_pending", None) == "DESCEND_PAD":

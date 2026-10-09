@@ -20,7 +20,7 @@ import re
 import statistics
 import sys
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 
 
 def load_rows(d):

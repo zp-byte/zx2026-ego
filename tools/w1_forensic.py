@@ -7,7 +7,7 @@ import re
 import yaml
 
 D = os.path.expanduser(
-    "~/zx2026_defop_ws/run_logs/matrix_w1_20260903_185635")
+    "~/zx2026_arena_ws/run_logs/matrix_w1_20260903_185635")
 CELLS = ["01_B_vs_seed42", "03_D_full_seed42", "07_D_full_seed43",
          "10_C_vs_rq_seed45", "11_D_full_seed45", "00_A_base_seed42",
          "08_A_base_seed45", "05_B_vs_seed43", "09_B_vs_seed45",

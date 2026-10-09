@@ -6,7 +6,7 @@ import sys
 
 import yaml
 
-WS = "/home/ubuntu/zx2026_defop_ws"
+WS = "/home/ubuntu/zx2026_arena_ws"
 sys.path.insert(0, WS + "/tools")
 import w1_matrix_run as W
 

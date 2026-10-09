@@ -55,7 +55,7 @@ sleep 8
 echo "=== VERIFY ==="
 python3 - <<'PY'
 import json, os
-p = os.path.expanduser("~/zx2026_defop_ws/run_logs/gcs_status.json")
+p = os.path.expanduser("~/zx2026_arena_ws/run_logs/gcs_status.json")
 d = json.load(open(p))
 pat = "".join("X" if (d["drones"][k] or {}).get("phase") else "."
               for k in sorted(d["drones"]))

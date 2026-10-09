@@ -3,7 +3,7 @@
 """调试：seed-42 drone-4 各 run 的 CSV 轨迹分组（矩阵 B_tc42 卡死排查用）。"""
 import csv
 
-PATH = "/home/ubuntu/zx2026_defop_ws/run_logs/nav_metrics_ts.csv"
+PATH = "/home/ubuntu/zx2026_arena_ws/run_logs/nav_metrics_ts.csv"
 rows = []
 _raw = open(PATH, "rb").read().replace(b"\x00", b"").decode("utf-8", "replace")
 for r in csv.reader(_raw.splitlines()):

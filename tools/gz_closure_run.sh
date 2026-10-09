@@ -18,8 +18,8 @@
 # 后端的总体表现：col 计数（monitor logwarn "COLLISION #" 带坐标）、
 # score、全时长无右删失、NE 无断档。
 #
-# 用法: bash ~/zx2026_defop_ws/tools/gz_closure_run.sh
-WS=/home/ubuntu/zx2026_defop_ws
+# 用法: bash ~/zx2026_arena_ws/tools/gz_closure_run.sh
+WS=/home/ubuntu/zx2026_arena_ws
 CFG=$WS/src/zx2026_common/config/sim_settings.yaml
 TS=$(date +%Y%m%d_%H%M%S)
 OUT=$WS/run_logs/gz_closure_$TS

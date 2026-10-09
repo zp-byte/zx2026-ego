@@ -11,9 +11,6 @@ import math
 import os
 import sys
 
-# ⚠ 生成器自持（2026-10-07 换场）：此前本文件是 defop_ws 的副本，_WS 硬编码指向
-# defop_ws，故 ego 的表/Scene/mesh URI 实际全来自 defop_ws —— 改 ego 自己的表不起作用。
-# 收归本仓后，ego 的场景与 defop/arena 线解耦，改动不外溢。
 _WS = "/home/ubuntu/zx2026_ego_ws"
 sys.path.insert(0, os.path.join(_WS, "src/zx2026_common/scripts"))
 sys.path.insert(0, os.path.join(_WS, "src/arena_world_gazebo/scripts"))
@@ -24,8 +21,6 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "worlds", "forest_world.worl
 
 # 杨树林 mesh（table 场景视觉；STL 由 tools/import_poplar_sdf.py 配套拷入）
 MESH_URI = "file:///home/ubuntu/zx2026_ego_ws/src/arena_world_gazebo/meshes/poplar"
-# 云杉林 mesh（DeFoP 原林资产；整树 dae，纹理随目录）
-MESH_URI_SPRUCE = "file:///home/ubuntu/zx2026_ego_ws/src/arena_world_gazebo/meshes/spruce"
 
 # 平台色板（唯一色表；权威源=scene.color_map/dp.color 的颜色名，此处只做名字→RGB）
 PLATFORM_COLORS = {
@@ -72,12 +67,6 @@ def branch_links(ob):
     1.8+ 才有），用无帽 cylinder 近似——恰与 monitor 的 point_segment_dist
     线段判定同几何，端帽差 ≤ 枝径 2.2cm 可忽略。SDF cylinder 沿自身 Z 轴；
     姿态取 roll=0 / pitch=acos(dz) / yaw=atan2(dy,dx)（同胶囊朝向约定）。
-
-    ⚠ 已知隐患（2026-10-01 发现，未修）：下面 `世界 − (cx,cy)` **没有反旋
-    mesh_yaw**，模型整体再被 Gazebo 转一次 ⇒ 带 `mesh_yaw≠0` 的表场景里枝会
-    双重旋转、落到离视觉枝 ~1.8m 的错位置。本函数当前只服务 procedural 旧路径
-    （`mesh_yaw` 恒 0，故实际无害）且 `branches.enabled=false`，但**新写的
-    真枝路径请用 `branch_collisions()`**，它做了 R(−yaw) 反旋。
     """
     links = []
     brs = getattr(ob, "branches", None) or []
@@ -102,85 +91,12 @@ def branch_links(ob):
     return links
 
 
-def branch_collisions(ob, origin_z=0.0):
-    """树的真枝碰撞体：消费 Scene ob.branches，发**只有碰撞、没有视觉**的
-    `<collision>` 串（插进树模型自己的 `<link name="tree">` 里）。
-
-    与 `branch_links()` 的分工：
-      · `branch_links()` 是旧路径（细枝/独立 link，碰撞+视觉各一份）——保留不动；
-      · 本函数服务 table 场景的真枝：杨树的枝**已经由 wood STL 渲染**，再发
-        圆柱视觉就是双重渲染（同一根枝画两遍，还比 mesh 粗），故只发碰撞。
-
-    姿态约定与 `branch_links()` 逐字相同（roll=0 / pitch=acos(dz) /
-    yaw=atan2(dy,dx)，Gazebo Classic 11 无 capsule 用无帽 cylinder）。
-
-    **为什么必须反旋（易错点，勿删此注释）**：`ob.branches` 是**世界系**线段，
-    而写进树模型的 `<collision><pose>` 是**模型局部系**。模型整体还会被 Gazebo
-    再按 `<pose>` 的 yaw 旋转一次，所以这里必须取 `R(-yaw)·(世界 − 树心)`；
-    直接用 `世界 − 树心` 会让 Gazebo 转第二遍 ⇒ **双重旋转**，枝碰撞落到离
-    视觉枝 1.8m 的错位置（实测 maxd=1.802m，靠本文件外的三口径对质脚本揪出）。
-    cylinder 自身的 yaw 也必须在局部系里算，故先把两端点搬进局部系再求方向。
-
-    **origin_z 为什么必须显式传**：`branch_links()` 里写死 `oz = trunk_h/2`
-    是因为那边的模型 pose 把 z 放在干中（旧圆柱树模型）；杨树模型 pose z=0，
-    原点在**地面**。两者不能共用同一个写死的基准，故此处由调用方给。
-    """
-    out = []
-    brs = getattr(ob, "branches", None) or []
-    th = float(getattr(ob, "mesh_yaw", 0.0) or 0.0)
-    ct, st = math.cos(th), math.sin(th)
-
-    def loc(p):
-        """世界系 → 模型局部系：先平移，再 R(-yaw)。"""
-        dx, dy, dz = p[0] - ob.cx, p[1] - ob.cy, p[2] - origin_z
-        return (ct * dx + st * dy, -st * dx + ct * dy, dz)
-
-    for k, (sx, sy, sz, ex, ey, ez, br) in enumerate(brs):
-        a, b = loc((sx, sy, sz)), loc((ex, ey, ez))
-        dx, dy, dz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
-        ln = math.sqrt(dx * dx + dy * dy + dz * dz)
-        if ln < 1e-9:
-            continue
-        ux, uy, uz = dx / ln, dy / ln, dz / ln
-        pitch = math.acos(max(-1.0, min(1.0, uz)))
-        yaw = math.atan2(uy, ux)
-        mx, my, mz = (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0
-        out.append('<collision name="c_branch_%d"><pose>%.3f %.3f %.3f 0 %.4f '
-                   '%.4f</pose><geometry><cylinder><radius>%.3f</radius>'
-                   '<length>%.3f</length></cylinder></geometry></collision>'
-                   % (k, mx, my, mz, pitch, yaw, br, ln))
-    return "\n    ".join(out)
-
-
 def tree_model_poplar(oid, ob):
-    """杨树（table 场景）：wood STL 视觉（干+枝）+ 叶 STL 视觉 + 冠包络碰撞。
+    """杨树（table 场景）：wood/leaves STL 视觉（与外部 SDF 同构）+ 树干/
+    冠包络两圆柱碰撞（=SDF c_trunk/c_crown 契约，gz 物理与 py Scene 一致）。
 
-    口径沿革：
-      · 10-01 只去碰撞冠（冠仅视觉）；
-      · 10-02 上半天用户裁决「冠=物理存在」⇒ 干+真枝+冠三件套；
-      · 10-02 晚用户裁决「冠物理、视觉都删掉，只保留树枝」⇒ 冠两路全删；
-      · **10-07 用户裁决换场至 zx2026_ws（arena）场景，全恢复含叶视觉**
-        （正式反转 10-02 裁决）：冠包络碰撞由表 meta `crown_collidable=true`
-        开回（发 c_crown，且 `Scene._crown_z_range` 同步给出区间 = 四层同源），
-        叶视觉在本函数拼回 v_leaf（`tree_<v>_leaves.stl`）；真枝由表缺
-        `branch_file` 键而断源（不发 c_branch）。
-      · 树体 = 干 c_trunk + 冠 c_crown + wood mesh + leaf mesh + 0 根真枝。
-    杠杆语义（键保留为回滚/换场开关）：crown_collidable 控物理冠；叶视觉是
-    本函数的直拼，不随任何键。
-    ⚠ **叶 mesh 不是「纯观赏件」——它进了 Gazebo 真实相机传感器的渲染路径**
-    （2026-10-07 受控实测定谳，见下）。两条相机链要分清：
-      · **合成链**（`camera_render` / depth_sim，读 `Scene`）：Scene 里**没有叶的
-        表示** ⇒ 看不到叶，速率与叶无关（实测有叶/无叶均 11.9 Hz，纹丝不动）；
-      · **Gazebo 传感器链**（`drone_depth_sensor()` 的 D435 depth，本文件 :424）：
-        **渲染真实几何** ⇒ 叶的面数直接吃它的帧率。
-    ⚠⚠ **换场那次就是栽在这里**：原始叶 mesh 约 4100 面/棵 × 203 棵 ≈ 83 万面，
-    把 ego 臂**独有**的 D435 深度相机从 2.28 Hz 打到 **0.595 Hz**，而
-    `grid_map/odom_depth_timeout = 1.0 s` ⇒ 帧间隔 1.68 s ≫ 1.0 s ⇒
-    `ego_replan_fsm` 每拍打 `Depth Lost! EMERGENCY_STOP`（单局 11966 条）⇒
-    六机全程急停、零碰撞零落地。**arena 自己跑不受影响，因为它没有深度传感器。**
-    ⇒ 叶 mesh 已抽稀到 **64 面/棵**（`tools/decimate_leaf_mesh.py`，顶点聚类），
-    实测深度回到 **2.25 Hz**（≈ 无叶档 2.28 Hz 的 99%）。**改这两个 mesh 前先读
-    该工具的 docstring，别再往深度相机里塞面。**
+    冠包络圆柱参与碰撞是杨树场景新增语义：冠下缘 ≥2.81m 在巡航带 (≤2.6)
+    之上，正常飞行永不接触；仅当异常爬升进冠区时由 gz 物理硬拦。
     """
     vi = ob.mesh_variant
     s = ob.mesh_scale or 1.0
@@ -191,60 +107,15 @@ def tree_model_poplar(oid, ob):
                  '<geometry><cylinder><radius>%.3f</radius><length>%.3f'
                  '</length></cylinder></geometry></collision>'
                  % (ob.trunk_h / 2.0, ob.trunk_r, ob.trunk_h))
-    # 冠包络圆柱：仅在表 meta 未关掉冠碰撞时发（= 旧表/云杉档口径）
-    if getattr(ob, "crown_collidable", True):
-        crown_h = ob.crown_h if ob.crown_h else 0.64 * ob.trunk_h / 0.78
-        crown_col = ('<collision name="c_crown"><pose>0 0 %.3f 0 0 0</pose>'
-                     '<geometry><cylinder><radius>%.3f</radius><length>%.3f'
-                     '</length></cylinder></geometry></collision>'
-                     % (ob.crown_z, ob.crown_r, crown_h))
-    else:
-        crown_col = ""
-    # 真枝碰撞：模型 pose z=0（原点在地面），故 origin_z=0
-    wood_vis = ('<visual name="v_wood"><geometry>%s</geometry>%s</visual>'
-                % (mesh("wood"), mat(0.45, 0.31, 0.19)))
-    # 冠视觉 v_leaf（tree_<v>_leaves.stl）：2026-10-07 换场恢复（反转 10-02 裁决）。
-    leaf_vis = ('<visual name="v_leaf"><geometry>%s</geometry>%s</visual>'
-                % (mesh("leaves"), mat(0.22, 0.47, 0.16)))
-    body = "\n    ".join(x for x in (wood_vis, leaf_vis, trunk_col, crown_col,
-                                     branch_collisions(ob, 0.0)) if x)
-    return """<model name="tree_%d">
-  <static>true</static>
-  <pose>%.3f %.3f 0 0 0 %.3f</pose>
-  <link name="tree">
-    %s
-  </link>
-</model>""" % (oid, ob.cx, ob.cy, ob.mesh_yaw or 0.0, body)
-
-
-def tree_model_spruce(oid, ob):
-    """云杉（DeFoP picea_abies 林，table 场景 mesh_kind=spruce）：整树 dae 视觉
-    + 树干/冠包络两圆柱碰撞。
-
-    几何与树表同源（tools/import_spruce_world.py 从 meshes/spruce/
-    spruce_variants.json 实测值 × 逐棵 scale 写出），dae 也按同一 scale 缩放
-    → gz 物理 == py Scene == A* 占用图。
-
-    与杨树的关键差别：云杉冠底中位 1.22m，正压巡航带（杨树是 2.81m，在带外）。
-    故冠是真障碍、不是装饰 —— 视觉虽由 dae 承担，碰撞仍须显式给冠圆柱，
-    与 scene.py._collides_crown 同几何。
-    """
-    vi = ob.mesh_variant
-    s = ob.mesh_scale or 1.0
-    vis = ('<visual name="v_tree"><geometry><mesh>'
-           '<uri>%s/picea_abies_%d.dae</uri>'
-           '<scale>%.4f %.4f %.4f</scale>'
-           '</mesh></geometry></visual>'
-           % (MESH_URI_SPRUCE, vi, s, s, s))
-    trunk_col = ('<collision name="c_trunk"><pose>0 0 %.3f 0 0 0</pose>'
-                 '<geometry><cylinder><radius>%.3f</radius><length>%.3f'
-                 '</length></cylinder></geometry></collision>'
-                 % (ob.trunk_h / 2.0, ob.trunk_r, ob.trunk_h))
     crown_h = ob.crown_h if ob.crown_h else 0.64 * ob.trunk_h / 0.78
     crown_col = ('<collision name="c_crown"><pose>0 0 %.3f 0 0 0</pose>'
                  '<geometry><cylinder><radius>%.3f</radius><length>%.3f'
                  '</length></cylinder></geometry></collision>'
                  % (ob.crown_z, ob.crown_r, crown_h))
+    wood_vis = ('<visual name="v_wood"><geometry>%s</geometry>%s</visual>'
+                % (mesh("wood"), mat(0.45, 0.31, 0.19)))
+    leaf_vis = ('<visual name="v_leaf"><geometry>%s</geometry>%s</visual>'
+                % (mesh("leaves"), mat(0.22, 0.47, 0.16)))
     return """<model name="tree_%d">
   <static>true</static>
   <pose>%.3f %.3f 0 0 0 %.3f</pose>
@@ -252,9 +123,10 @@ def tree_model_spruce(oid, ob):
     %s
     %s
     %s
+    %s
   </link>
 </model>""" % (oid, ob.cx, ob.cy, ob.mesh_yaw or 0.0,
-               vis, trunk_col, crown_col)
+               wood_vis, leaf_vis, trunk_col, crown_col)
 
 
 def tree_model(oid, ob):
@@ -390,82 +262,13 @@ def drone_model(i, x, y):
     </inertial>
     %s
 %s
-%s
   </link>
   <plugin name="drone_vel_%d" filename="libdrone_vel_plugin.so">
     <drone_id>%d</drone_id>
     <kp>3.0</kp>
     <g>9.81</g>
   </plugin>
-</model>""" % (i, x, y, col_geo(col_box), "\n".join(vis),
-               drone_depth_sensor(i), i, i)
-
-
-def drone_depth_sensor(i):
-    """D435 前视深度相机（ego 路线 2026-10-05，docs/EGO_DESIGN.md §三）。
-
-    ⚠ **本传感器是「渲染成本传感器」，帧率被场景三角面数直接决定**
-    （2026-10-07 受控实测，详见 `tree_model_poplar` docstring）：请求
-    `update_rate=15.0`，实际帧率随场景几何走 —— 叶 mesh 4100 面/棵时只有
-    0.595 Hz，抽稀到 64 面/棵后回到 2.25 Hz。而 `grid_map/odom_depth_timeout
-    = 1.0 s`（grid_map.cpp:53）是硬门：帧间隔一旦越过 1.0 s，`ego_replan_fsm`
-    每拍打 `Depth Lost! EMERGENCY_STOP`，全机队永久急停。
-    ⇒ **往场景里加渲染几何前，先量本话题的 Hz。** 6 台机各一个深度相机，
-    成本是叠加的。
-
-    - 真加 Gazebo depth sensor；ROS 桥用 libgazebo_ros_openni_kinect.so
-      （FUEL/ego-planner 官方 sim 同款，XTDrone 同参数表）。
-      Phase 0.5 v5 定谳：libgazebo_ros_camera.so 不读 depthImage* 参数
-      （strings 全空，depth 专用参数只在 depth_camera/kinect 两个 .so）——
-      旧配置深度话题从未被创建，是零帧第一病根。
-    - 装机体系原点平视（pose 全 0）：cam2body_（grid_map.cpp:95 硬编码，平移零）
-      不破，plan_env 零改动。
-      ⚠️ **2026-10-06 订正：原注释写「own visuals 最大前伸=机臂尖 0.12+桨 0.10=0.22
-      < near clip 0.30 ⇒ 自遮挡免疫」——两处错**：(a) 把机臂**半长** 0.12 当成臂尖，
-      桨盘中心其实在 (±0.24, ±0.24)（见 `_drone_visuals`：`tx,ty = dx*0.24, dy*0.24`），
-      盘 r=0.10 ⇒ 外缘伸到 **0.44 m**；(b) **near clip 只裁掉比它「近」的几何，
-      比它「远」的照渲染**——所以「小于 clip」≠「不可见」。实测：桨盘落在 87°
-      半视场内的内侧象限正好在 **[0.30, 0.40] m**，每帧 186 px 被画成深度图回波
-      ⇒ 经 grid_map 变成**距机心 0.303 m 的 3 个占据格**（体固定，两机逐字相同）。
-      该幻影在膨胀 ≥0.3 时吞掉机心致规划器全程拒停。**修法在配置侧：
-      `depth_mindist = 0.45` 把它滤掉**（见 src/VENDORED.md、docs/ego_blind_flight_case.md）。
-      若要改本文件，正解是让自几何进不了视场（相机前移 / 桨不进视锥），
-      但前者会破 cam2body_ 平移零的契约，故本轮不动。
-    - 话题契约对齐旧 depth_sim：/drone_<i>/depth/image_raw +
-      /drone_<i>/depth/camera_info；RGB 发 image_color 不订。
-      注意 kinect 插件无点云开关，points 话题会发（无订阅者时 roscpp
-      不序列化，实测成本见 Phase 0.5 验收）。
-    - 输出 32FC1 米制：grid_map.cpp:994-997 原生 convertTo(CV_16UC1,
-      k_depth_scaling_factor=1000)，与 fd250 sim 链语义逐字节一致。
-    - 内参（grid_map 走 launch 参数，不订 camera_info）：256x144 hfov 1.5184
-      ⇒ fx=fy=134.9 cx=128 cy=72（advanced_param_zx.xml 同帧装订）。
-      Phase 0.5 v7 实测 424x240 全栈 2.3Hz < 5Hz 门 → 降 256x144（像素 -64%）。
-    - 渲染率验收门 ≥5Hz（WSL 无头 gzserver，llvmpipe 梯子见设计文档 §八）。
-    """
-    return """    <sensor name="d435_depth" type="depth">
-      <pose>0 0 0 0 0 0</pose>
-      <update_rate>15.0</update_rate>
-      <always_on>true</always_on>
-      <visualize>false</visualize>
-      <camera>
-        <horizontal_fov>1.5184</horizontal_fov>
-        <image><width>256</width><height>144</height><format>R8G8B8</format></image>
-        <clip><near>0.30</near><far>10.0</far></clip>
-      </camera>
-      <plugin name="d435_depth_ros" filename="libgazebo_ros_openni_kinect.so">
-        <alwaysOn>true</alwaysOn>
-        <updateRate>15.0</updateRate>
-        <cameraName>drone_%d/depth</cameraName>
-        <imageTopicName>image_color</imageTopicName>
-        <cameraInfoTopicName>rgb_camera_info</cameraInfoTopicName>
-        <depthImageTopicName>image_raw</depthImageTopicName>
-        <depthImageCameraInfoTopicName>camera_info</depthImageCameraInfoTopicName>
-        <pointCloudTopicName>points</pointCloudTopicName>
-        <frameName>drone_%d/depth_optical</frameName>
-        <pointCloudCutoff>0.30</pointCloudCutoff>
-        <pointCloudCutoffMax>10.0</pointCloudCutoffMax>
-      </plugin>
-    </sensor>""" % (i, i)
+</model>""" % (i, x, y, col_geo(col_box), "\n".join(vis), i, i)
 
 
 # ---------------------------------------------------------------------------
@@ -581,14 +384,11 @@ def build():
             out.append(net_model(ob))
             n_net += 1
 
-    # 树/灌木（table 场景按表级 mesh_kind 分派：spruce=云杉 dae / 其余=杨树 STL；
-    # 旧程序化场景=圆柱树）
+    # 树/灌木（table 场景=杨树 mesh 视觉；旧场景=圆柱树）
     n_tree = n_bush = 0
     for ob in scene.obstacles:
         if ob.kind == "tree":
-            if ob.mesh_kind == "spruce":
-                out.append(tree_model_spruce(ob.id, ob))
-            elif ob.mesh_variant is not None:
+            if ob.mesh_variant is not None:
                 out.append(tree_model_poplar(ob.id, ob))
             else:
                 out.append(tree_model(ob.id, ob))

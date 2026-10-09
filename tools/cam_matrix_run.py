@@ -16,7 +16,7 @@
 追加 matrix_results.csv。含 wall-monotonic 漂移检测（>30s = 睡眠污染，留档
 __contaminated 并自动重跑，沿用 matrix_run.py 纪律）。结束恢复 source=truth。
 
-用法: python3 ~/zx2026_defop_ws/tools/cam_matrix_run.py
+用法: python3 ~/zx2026_arena_ws/tools/cam_matrix_run.py
 """
 import glob
 import os
@@ -28,7 +28,7 @@ import time
 
 import yaml
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 CFG = WS + "/src/zx2026_common/config/sim_settings.yaml"
 RULES = WS + "/src/zx2026_common/config/competition_rules.yaml"
 VERIFY_TXT = "/tmp/zx2026_verify.txt"

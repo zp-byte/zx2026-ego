@@ -3,7 +3,7 @@
 """tools/w7_selftest.py — W7 冠撞修复三臂离线自测（C1/C2/C3 默认关基线保护）。
 
 用法（WSL）：
-  cd ~/zx2026_defop_ws && source /opt/ros/noetic/setup.bash \
+  cd ~/zx2026_arena_ws && source /opt/ros/noetic/setup.bash \
     && source devel/setup.bash && python3 tools/w7_selftest.py
 
 结果写 /tmp/w7_selftest.txt（UTF-8，规避 GBK 控制台）。
@@ -25,7 +25,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 # 只插 arena_nav：nav_node 模块顶要 import zx2026_common.msg（devel 生成包），
 # 与 vo_selftest/bh_selftest 同款结构。
 sys.path.insert(0, os.path.join(HERE, "..", "src", "arena_nav", "scripts"))

@@ -18,7 +18,7 @@
 补丁→run_verify.sh→解析→归档 run_logs/matrix_ei_<ts>/。结束恢复两 yaml。
 wall-monotonic 漂移检测继承 matrix_waveb_run.run_cell。
 
-用法: python3 ~/zx2026_defop_ws/tools/matrix_ei_settle.py
+用法: python3 ~/zx2026_arena_ws/tools/matrix_ei_settle.py
 """
 import os
 import shutil

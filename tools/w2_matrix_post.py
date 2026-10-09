@@ -15,7 +15,7 @@ import sys
 
 import yaml
 
-WS = "/home/ubuntu/zx2026_defop_ws"
+WS = "/home/ubuntu/zx2026_arena_ws"
 sys.path.insert(0, WS + "/src/zx2026_common/scripts")
 from zx2026_common.scene import Scene  # noqa: E402
 

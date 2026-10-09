@@ -94,7 +94,7 @@ class Ops(object):
         self.debug_cmds = ops.get("debug_cmds", {}) or {}
         self.probe = ops.get("probe", []) or []
         self.last_results = []  # 最近一次 dispatch 的 (id, ok) 明细
-        logdir = ops.get("logdir", "/home/ubuntu/zx2026_defop_ws/run_logs")
+        logdir = ops.get("logdir", "/home/ubuntu/zx2026_arena_ws/run_logs")
         self.logdir = logdir
         self.logpath = "%s/gcs_ops_%s.jsonl" % (
             logdir, time.strftime("%Y%m%d_%H%M%S"))

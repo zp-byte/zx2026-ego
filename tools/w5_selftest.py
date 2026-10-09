@@ -17,8 +17,8 @@ import types
 import numpy as np
 
 sys.path.insert(0, '/opt/ros/noetic/lib/python3/dist-packages')
-sys.path.insert(0, '/home/ubuntu/zx2026_defop_ws/src/zx2026_common/scripts')
-sys.path.insert(0, '/home/ubuntu/zx2026_defop_ws/src/arena_nav/scripts')
+sys.path.insert(0, '/home/ubuntu/zx2026_arena_ws/src/zx2026_common/scripts')
+sys.path.insert(0, '/home/ubuntu/zx2026_arena_ws/src/arena_nav/scripts')
 
 # ---- 以桩加载 nav_node（跳过 rospy/传感器初始化，只取算术） ----------------
 rospy_stub = types.ModuleType('rospy')
@@ -36,7 +36,7 @@ rospy_stub.is_shutdown = lambda: False
 sys.modules['rospy'] = rospy_stub
 
 spec = importlib.util.spec_from_file_location(
-    'nav_node', '/home/ubuntu/zx2026_defop_ws/src/arena_nav/scripts/nav_node.py')
+    'nav_node', '/home/ubuntu/zx2026_arena_ws/src/arena_nav/scripts/nav_node.py')
 nav = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nav)
 

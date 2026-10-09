@@ -5,9 +5,18 @@
        Gazebo 物理后端请用: roslaunch arena_world_gazebo gazebo.launch
   -->
 
+  <!-- ⚠ roslaunch 对**未声明的顶层 arg 静默忽略**（不报错、不生效）⇒ 要经命令行
+       穿的开关必须在每个入口声明再透传。cloud_src: depth=深度链(默认)/lidar=对照臂。
+       详见 stack_nodes.launch。 -->
+  <arg name="cloud_src" default="depth"/>
+  <arg name="defop_arm" default="false"/>
+
   <!-- 场景 + 主仿真循环（6 机动力学/碰撞/时钟/TF） -->
   <node pkg="arena_world" type="world_node.py" name="world_node" output="screen"/>
 
   <!-- 任务/感知/导航/计分 节点栈（与后端无关） -->
-  <include file="$(find arena_world)/launch/stack_nodes.launch"/>
+  <include file="$(find arena_world)/launch/stack_nodes.launch">
+    <arg name="cloud_src" value="$(arg cloud_src)"/>
+    <arg name="defop_arm" value="$(arg defop_arm)"/>
+  </include>
 </launch>

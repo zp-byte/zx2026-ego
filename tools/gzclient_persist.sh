@@ -7,7 +7,7 @@ export GALLIUM_DRIVER=llvmpipe
 export GAZEBO_MODEL_PATH=/opt/ros/noetic/share/gazebo-11/models
 
 pkill -f gzserver 2>/dev/null; pkill -f gzclient 2>/dev/null; sleep 2
-setsid nohup gzserver /home/ubuntu/zx2026_defop_ws/src/arena_world_gazebo/worlds/forest_world.world >/tmp/gzs_p.log 2>&1 < /dev/null &
+setsid nohup gzserver /home/ubuntu/zx2026_arena_ws/src/arena_world_gazebo/worlds/forest_world.world >/tmp/gzs_p.log 2>&1 < /dev/null &
 sleep 12
 setsid nohup gzclient >/tmp/gzc_p.log 2>&1 < /dev/null &
 

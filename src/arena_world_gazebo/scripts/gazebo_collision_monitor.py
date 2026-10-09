@@ -57,8 +57,7 @@ class CollisionMonitor:
                 "/drone_%d/collision" % i, Bool, queue_size=1, latch=True)
             self.pub_vel[i] = rospy.Publisher(
                 "/drone_%d/vel_cmd" % i, Twist, queue_size=1)
-            self.st[i] = {"t": -1.0, "count": 0, "dir": None, "kind": None,
-                          "freeze": False}
+            self.st[i] = {"t": -1.0, "count": 0, "dir": None, "freeze": False}
 
         rospy.Subscriber("/gazebo/model_states", ModelStates, self._on_states)
         rospy.loginfo("gazebo_collision_monitor: %d trees %d bushes dr=%.2f "
@@ -77,43 +76,10 @@ class CollisionMonitor:
         return dx * dx + dy * dy + dz * dz < r * r
 
     def _tree_hit(self, px, py, pz, t):
-        # 圆柱树干；z 带 = [ground_z, ground_z+trunk_h]
+        # 圆柱树干（球冠仅视觉，不参与碰撞）；z 带 = [ground_z, ground_z+trunk_h]
         if pz + self.dr < self.gz or pz - self.dr > self.gz + t.trunk_h:
             return False
         return (px - t.cx) ** 2 + (py - t.cy) ** 2 < (t.trunk_r + self.dr) ** 2
-
-    @staticmethod
-    def _crown_z_range(t):
-        """冠包络竖直跨度（世界系）。无冠返回 None。与 scene._crown_z_range 同口径。
-
-        ⚠ 本函数是 `Scene._crown_z_range` 的**第二份实现**（判官不 import Scene 方法，
-        只拿它的 obstacles），两处必须逐条同步。表级 meta `crown_collidable=false`
-        （杨树档 2026-10-02 晚起为 False「冠物理、视觉双删」；键保留为回滚杠杆）
-        时 gz 不再发 `c_crown`，本处若仍按 `crown_r` 判定 → 「物理不挡、判官照报」
-        的静默失配。新增门控时**两处都要改**。
-        """
-        if not getattr(t, "crown_collidable", True):
-            return None
-        if t.crown_r is None or t.crown_z is None:
-            return None
-        if t.crown_h:
-            return (t.crown_z - t.crown_h / 2.0, t.crown_z + t.crown_h / 2.0)
-        return (t.crown_z - t.crown_r, t.crown_z + t.crown_r)
-
-    def _crown_hit(self, px, py, pz, t):
-        """冠包络圆柱（球 vs 竖直圆柱）= scene._collides_crown 同几何。
-
-        杨树档 2026-10-02 晚起 `crown_collidable=false`（冠物理、视觉双删）⇒ 本
-        子句恒不触发（`_crown_z_range` 返回 None）。机制保留供云杉/回滚档：云杉
-        冠底中位 1.22 正压巡航带，冠是真障碍 —— gz 物理/py Scene/判官三口径必须
-        一致，否则出现「物理在挡、判官不报」或反过来的静默失配。
-        """
-        zr = self._crown_z_range(t)
-        if zr is None:
-            return False
-        if pz + self.dr < zr[0] or pz - self.dr > zr[1]:
-            return False
-        return (px - t.cx) ** 2 + (py - t.cy) ** 2 < (t.crown_r + self.dr) ** 2
 
     def _branch_hit(self, px, py, pz, t):
         """球-枝胶囊检测（gz 树枝物理缺环补齐）：球(pos,dr) vs 线段圆柱
@@ -147,28 +113,17 @@ class CollisionMonitor:
         return None
 
     def _collision(self, i, px, py, pz, dpos):
-        """返回 (是否碰撞, 弹开方向 vx,vy,vz, 命中类型)。
-
-        类型 ∈ {"trunk","crown","branch","bush","fence","drone"}，供碰撞归类统计
-        （换场后须能分辨「撞干」与「撞冠」，否则无法判断 P3 是否做全）。"""
+        """返回 (是否碰撞, 弹开方向 vx,vy,vz)。"""
         for t in self.trees:
             if self._tree_hit(px, py, pz, t):
                 dx, dy = px - t.cx, py - t.cy
                 n = math.hypot(dx, dy)
                 if n < 1e-9:
-                    return True, (1.0, 0.0, 0.0), "trunk"
-                return True, (dx / n, dy / n, 0.0), "trunk"
-            if self._crown_hit(px, py, pz, t):
-                # 冠弹方向与树干同律：水平远离树轴。机在冠内（含冠底下方顶入）
-                # 时垂直弹会把人朝下砸或朝上顶进更深处，横向脱离才是正确语义。
-                dx, dy = px - t.cx, py - t.cy
-                n = math.hypot(dx, dy)
-                if n < 1e-9:
-                    return True, (1.0, 0.0, 0.0), "crown"
-                return True, (dx / n, dy / n, 0.0), "crown"
+                    return True, (1.0, 0.0, 0.0)
+                return True, (dx / n, dy / n, 0.0)
             bdir = self._branch_hit(px, py, pz, t)
             if bdir is not None:
-                return True, bdir, "branch"
+                return True, bdir
         for b in self.bushes:
             if self._sphere_aabb(px, py, pz, self.dr, b.lo, b.hi):
                 nx = min(max(px, b.lo[0]), b.hi[0])
@@ -179,7 +134,7 @@ class CollisionMonitor:
                 if n < 1e-9:
                     n = 1.0
                     dx, dy, dz = 1.0, 0.0, 0.0
-                return True, (dx / n, dy / n, dz / n), "bush"
+                return True, (dx / n, dy / n, dz / n)
         for f in self.fences:
             if self._sphere_aabb(px, py, pz, self.dr, f.lo, f.hi):
                 nx = min(max(px, f.lo[0]), f.hi[0])
@@ -190,7 +145,7 @@ class CollisionMonitor:
                 if n < 1e-9:
                     n = 1.0
                     dx, dy, dz = 1.0, 0.0, 0.0
-                return True, (dx / n, dy / n, dz / n), "fence"
+                return True, (dx / n, dy / n, dz / n)
         for j, (qx, qy, qz) in dpos.items():
             if j == i:
                 continue
@@ -198,8 +153,8 @@ class CollisionMonitor:
             d = math.hypot(dx, dy, dz)
             if 1e-9 < d < 2.0 * self.dr:
                 # 互撞：弹开方向远离对方
-                return True, (dx / d, dy / d, dz / d), "drone"
-        return False, (0.0, 0.0, 0.0), None
+                return True, (dx / d, dy / d, dz / d)
+        return False, (0.0, 0.0, 0.0)
 
     # ---- 主循环（100Hz：恢复窗口内高频 vel_cmd 覆盖 nav 的 20Hz） -------------
     def _on_states(self, msg):
@@ -224,14 +179,13 @@ class CollisionMonitor:
                 if st["freeze"]:
                     self.pub_vel[i].publish(Twist())
                     continue
-                hit, bdir, kind = self._collision(i, px, py, pz, dpos)
+                hit, bdir = self._collision(i, px, py, pz, dpos)
                 dt = now - st["t"]
                 if hit and st["t"] < 0:
                     # 新碰撞：发布事件 + 进入 bounce
                     st["t"] = now
                     st["count"] += 1
                     st["dir"] = bdir
-                    st["kind"] = kind
                     if st["count"] > self.max_collisions:
                         st["freeze"] = True
                         st["t"] = -1.0
@@ -242,9 +196,8 @@ class CollisionMonitor:
                     self.pub_col[i].publish(Bool(data=True))
                     rospy.logwarn(
                         "gazebo_collision_monitor: drone %d COLLISION #%d "
-                        "kind=%s at (%.2f,%.2f,%.2f) dir=(%.2f,%.2f,%.2f)",
-                        i, st["count"], kind, px, py, pz,
-                        bdir[0], bdir[1], bdir[2])
+                        "at (%.2f,%.2f,%.2f) dir=(%.2f,%.2f,%.2f)",
+                        i, st["count"], px, py, pz, bdir[0], bdir[1], bdir[2])
                     self.pub_vel[i].publish(self._tw(bdir, self.bounce_vel))
                 elif st["t"] >= 0:
                     # 恢复状态机：bounce → cooldown → 恢复（nav 接管）

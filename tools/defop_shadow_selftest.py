@@ -4,7 +4,7 @@
 离线自测：配置解析语义 + 发布点门控静态核查 + arrived 保活判据纯度。
 
 用法（WSL）：
-  cd ~/zx2026_defop_ws && source /opt/ros/noetic/setup.bash \
+  cd ~/zx2026_arena_ws && source /opt/ros/noetic/setup.bash \
     && source devel/setup.bash && python3 tools/defop_shadow_selftest.py
 
 结果写 /tmp/defop_shadow_selftest.txt（UTF-8，规避 GBK 控制台）。
@@ -48,7 +48,7 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 # 只插 arena_nav/scripts：nav_node 顶部 import zx2026_common.msg（devel 生成
 # 包），源包无 msg 子包会遮蔽（与 bh_selftest 同款结构，见其头注）。
 sys.path.insert(0, os.path.join(HERE, "..", "src", "arena_nav", "scripts"))

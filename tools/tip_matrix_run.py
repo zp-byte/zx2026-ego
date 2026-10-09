@@ -35,7 +35,7 @@ import time
 
 import yaml
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 
 
 def _time_limit_s():

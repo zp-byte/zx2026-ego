@@ -20,7 +20,7 @@ import types
 import numpy as np
 
 spec = importlib.util.spec_from_file_location(
-    "nav_node", "/home/ubuntu/zx2026_defop_ws/src/arena_nav/scripts/nav_node.py")
+    "nav_node", "/home/ubuntu/zx2026_arena_ws/src/arena_nav/scripts/nav_node.py")
 nav = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nav)
 # W1 起 _sep_obs_guard 触发时打 loginfo_throttle（真 rospy 需 init_node），

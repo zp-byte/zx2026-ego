@@ -7,6 +7,13 @@
              任务/感知/导航/计分节点栈与 python 后端完全一致。
   -->
   <arg name="viewer" default="false"/>
+  <!-- ⚠ roslaunch 对**未声明的顶层 arg 静默忽略**（不报错、不生效）⇒ 任何要经
+       命令行穿的开关都必须在每个入口声明一次再透传进 include，否则
+       `cloud_src:=lidar` / `defop_arm:=true` 会无声失效。详见 stack_nodes.launch。
+       cloud_src: depth=合成前视深度相机链(默认) / lidar=原雷达链对照臂。
+       defop_arm: 2026-10-07 补声明 —— 此前 gz 后端传 defop_arm:=true 是静默空转。 -->
+  <arg name="cloud_src" default="depth"/>
+  <arg name="defop_arm" default="false"/>
   <param name="/use_sim_time" value="true"/>
 
   <!-- Gazebo 无头物理（gzserver 经 gazebo_ros 发布 /clock） -->
@@ -21,25 +28,10 @@
   <node name="gazebo_collision_monitor" pkg="arena_world_gazebo"
         type="gazebo_collision_monitor.py" output="screen"/>
 
-  <!-- 任务/感知/导航/计分 节点栈（max_vel/inflation=ego 臂 A/B 注入，见 stack_nodes.launch） -->
-  <arg name="max_vel" default="2.0"/>
-  <arg name="inflation" default="0.099"/>
-  <arg name="ground_filter" default="0.0"/>
-  <arg name="ray_length" default="4.5"/>
-  <arg name="depth_mindist" default="0.45"/>
-  <!-- p_hit：栅格图命中似然（母本 0.65=零行为变更）。确认时延旋钮，详见 stack_nodes.launch -->
-  <arg name="p_hit" default="0.65"/>
-  <!-- global_route：全局路由器臂（2026-10-06），默认关 = 逐字节旧行为。
-       见 stack_nodes.launch 与 docs/ego_blind_flight_case.md -->
-  <arg name="global_route" default="false"/>
+  <!-- 任务/感知/导航/计分 节点栈 -->
   <include file="$(find arena_world)/launch/stack_nodes.launch">
-    <arg name="max_vel" value="$(arg max_vel)"/>
-    <arg name="inflation" value="$(arg inflation)"/>
-    <arg name="ground_filter" value="$(arg ground_filter)"/>
-    <arg name="ray_length" value="$(arg ray_length)"/>
-    <arg name="depth_mindist" value="$(arg depth_mindist)"/>
-    <arg name="p_hit" value="$(arg p_hit)"/>
-    <arg name="global_route" value="$(arg global_route)"/>
+    <arg name="cloud_src" value="$(arg cloud_src)"/>
+    <arg name="defop_arm" value="$(arg defop_arm)"/>
   </include>
 
   <!-- 可选：RViz 查看（同 python 后端视图，TF 由插件广播） -->

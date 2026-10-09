@@ -8,7 +8,7 @@ import math
 import sys
 
 sys.path.insert(0, "/opt/ros/noetic/lib/python3/dist-packages")
-sys.path.insert(0, "/home/ubuntu/zx2026_defop_ws/tools/gcs")
+sys.path.insert(0, "/home/ubuntu/zx2026_arena_ws/tools/gcs")
 import gcs_agent as ga
 
 OK = True

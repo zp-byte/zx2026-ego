@@ -21,7 +21,7 @@ import sys
 
 import yaml
 
-WS = "/home/ubuntu/zx2026_defop_ws"
+WS = "/home/ubuntu/zx2026_arena_ws"
 ROS_LOG = os.path.expanduser("~/.ros/log")
 
 TS_RE = re.compile(r"\[(\d+)\.(\d+)\]")

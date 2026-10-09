@@ -48,29 +48,10 @@ import time
 
 import yaml
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 sys.path.insert(0, os.path.join(WS, "tools"))
 from matrix_run import CFG, VERIFY_TXT, SMOKE_LOG, VERIFY_TIMEOUT, \
     parse_metrics, set_in_block, set_key_in_block, set_top  # noqa: E402
-
-# 候选臂配置（2026-10-05 立案）：arm -> defop_nav.yaml 键覆盖。
-# baseline/defop 无覆盖（= 现状）；c1=候选1（死端 n_safe 门限）、c2=候选2
-# （选择代价间隙项）、c12=两者并行。臂名进 ARMSPEC，驱动侧 `!= baseline`
-# 即拉起 defop 链（2026-10-05 改），故 c* 与 defop 同链、仅配置不同。
-NAVCFG = os.path.join(WS, "src/defop_nav/config/defop_nav.yaml")
-# c1 门限 20：离线重放 3 局 31 起撞的 n_indx1 曲线定（dmin=1.0m 处中位 ~25、
-# 0.5m 处 ~12）——T=20 咬合余量 0.5~3.8m、只漏 2/19；全时间线误触发 7.5~8.5%
-# （T=10 只 2% 但漏 7/19；T=30 覆盖更全但停转代价更高）。8% 是诚实成本，A/B 量它。
-# c2 恒开（follow_clear_nsafe=0）：间隙场在开阔区自然为 0（无否决⇒无偏置）=
-# 自门控，比设阈值干净。w=0.5 rad ≈ 28.6° 上限偏置（目标对齐代价 0~1.5 rad 量级）。
-ARM_KEYS = {
-    "baseline": {},
-    "defop": {},
-    "c1": {"deadend_nsafe_min": 20},
-    "c2": {"follow_clear_w": 0.5, "follow_clear_nsafe": 0},
-    "c12": {"deadend_nsafe_min": 20, "follow_clear_w": 0.5,
-            "follow_clear_nsafe": 0},
-}
 
 # 端口分配口径：本工具全链只用 11411（run_verify*.sh 既有端口）
 MASTER = "http://127.0.0.1:11411"
@@ -91,11 +72,6 @@ COLS = ["arm", "seed", "run", "ts", "backend", "verdict", "score", "landed",
         "oom_hits", "runtime_s", "sleep_s",
         "timeout", "note", "cell_dir"]
 FALLBACK = {"n": 0}            # gz 基建坏回退 classic 的次数（summary 声明用）
-
-# VAE 推理设备（2026-10-01 GPU 加速立项）：driver 里 export VAE_DEVICE，由
-# defop.launch 的 $(optenv VAE_DEVICE cpu) 消费 → 6 机全跟随。main() 由
-# --vae-device 覆写。默认 cpu = 逐字节保留旧行为，A/B 时只差这一个开关。
-VAE_DEVICE = "cpu"
 
 # 门失败退码（driver.sh）：3=通用门失败（cell 作废）；4=gz 基建坏信号
 # （/clock 缺席）——auto 档据此回退 classic
@@ -147,32 +123,11 @@ def set_planner_source(path, value):
 
 def patch_cell(arm, seed):
     """单 cell 配置装订：run_seed + planner.source（两臂）+ depth（defop 真、
-    baseline 显式落 false=默认值，防跨 cell 补丁泄漏——matrix_run 同律）+
-    候选臂的 defop_nav.yaml 键覆盖（2026-10-05 立案）。"""
-    is_defop = arm != "baseline"
+    baseline 显式落 false=默认值，防跨 cell 补丁泄漏——matrix_run 同律）。"""
     set_top(CFG, "run_seed", seed)
-    set_planner_source(CFG, "defop" if is_defop else "internal")
+    set_planner_source(CFG, "defop" if arm == "defop" else "internal")
     set_key_in_block(CFG, "depth", "enabled",
-                     "true" if is_defop else "false")
-    patch_navcfg(arm)
-
-
-def patch_navcfg(arm):
-    """候选臂：按 ARM_KEYS 覆盖 defop_nav.yaml 的键（原地改值、保留注释）。
-    无覆盖的臂（baseline/defop）= no-op = 零写盘。命中数 != 1 即抛（防键名
-    写错时静默不改=假 A/B——本仓"配置补丁 ^ 锚点缩进失配"前科）。"""
-    keys = ARM_KEYS.get(arm) or {}
-    if not keys:
-        return
-    with open(NAVCFG, encoding="utf-8") as f:
-        txt = f.read()
-    for k, v in keys.items():
-        txt, n = re.subn(r"(?m)^%s:.*$" % re.escape(k),
-                         "%s: %s" % (k, v), txt)
-        if n != 1:
-            raise RuntimeError("navcfg 键 %r 命中 %d 次（应恰 1）" % (k, n))
-    with open(NAVCFG, "w", encoding="utf-8") as f:
-        f.write(txt)
+                     "true" if arm == "defop" else "false")
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +173,7 @@ import time
 import rospy
 from geometry_msgs.msg import Twist
 from rosgraph_msgs.msg import Clock
-from std_msgs.msg import Bool, Float32MultiArray, String
+from std_msgs.msg import Bool, Float32MultiArray
 
 OUT = sys.argv[1]
 MAX_S = float(sys.argv[2]) if len(sys.argv) > 2 else 2400.0
@@ -240,23 +195,6 @@ act = {d: _stat() for d in range(6)}
 n_true = {d: 0 for d in range(6)}
 duty = {d: 0.0 for d in range(6)}
 _prev_s = {d: None for d in range(6)}
-# 死端真值（2026-10-02 立案）：/drone_N/defop/debug 逐拍无节流发 JSON，mode 在
-# 死端拍为 deadend_stop/deadend_rotate，超时强制放宽拍另有 forced=True。
-# **零改 planner** 即可量到回合时长 —— 用来对拍影子档 replica 的 t_rot
-# （对拍失配则 Δ 判据作废，见 docs/deadend_timeout_case.md）。
-ddbg = {d: {"n": 0, "rot_s": 0.0, "stop_s": 0.0, "forced_s": 0.0,
-            "ep_n": 0, "mode": None, "t": None,
-            "ep_acc": 0.0, "hist": [0] * 12, "ep_max": 0.0, "tl": []}
-        for d in range(6)}
-# 逐拍时间线（Tier 2，2026-10-02 立案）：rosout 里 `[defop_cpn] drone_N veto=..
-# safe=.. min_score=..` 是 loginfo_throttle，实测每机每格仅 14~19 条、最大间隔
-# 46s ⇒ 撞前**瞬时**读数取不到，`defop_reactwin.py` 只能用"最近一条"定罪
-# （故设 lag>5s 归"证据不足"）。/drone_N/defop/debug 逐拍发（2~5Hz），此处把
-# **逐拍** mode/col_prob/veto/safe 落成紧凑数组，撞前滞后可压到 ~0.3s。
-# 行 = [sim_t, cod, col_prob, veto_cnt, safe_cnt, forced]，
-#   cod: 0=非死端 1=deadend_stop 2=deadend_rotate（forced 拍另由 forced 标）。
-# 键**逐拍变化**且 col_prob 可为 None（defop_cpn_node.py:831/:840）⇒ 三点均容缺。
-TL_MAX = 4000
 
 
 def on_clock(m):
@@ -296,70 +234,10 @@ def _mk_act(d):
     return cb
 
 
-def _mk_ddbg(d):
-    """死端真值：按 mode 的**前一条**归属把 sim 时长记入 rot/stop。
-    上升沿（上拍非死端、本拍死端）= 一次回合开始，与 `DEADEND enter` 同义。
-
-    2026-10-02 增：**逐回合时长直方图**（hist/ep_max）。这是死端回合时长的
-    **权威源** —— 直接取自真机 mode 线，不经过 planner 的 replica
-    （replica 曾因跳过拍充能而虚高一个量级，110544/00 d1 已法证）。
-    replica 只作对拍旁证。"""
-    def cb(m):
-        s = _sim[0]
-        r = ddbg[d]
-        r["n"] += 1
-        try:
-            j = json.loads(m.data)
-        except Exception:
-            return
-        md = j.get("mode")
-        cp = j.get("col_prob")
-        cod = 2 if md == "deadend_rotate" else (1 if md == "deadend_stop" else 0)
-        tl = r["tl"]
-        # 行 = [sim_t, cod, col_prob, veto, safe, forced,
-        #       dnear, dnear2, dmin, near_az_deg, yaw_deg, vwx, vwy, n_indx1]
-        # 前 6 列**位置不变**（defop_reactwin.py 按下标读，向后兼容）；
-        # 后 8 列 = ③ 监督层可观测性（见 defop_cpn_node.py plan_once 遥测段）。
-        _vw = j.get("vw") or [None, None]
-        tl.append([round(s, 3), cod,
-                   (round(float(cp), 3) if cp is not None else None),
-                   j.get("veto_cnt"), j.get("safe_cnt"),
-                   1 if j.get("forced") else 0,
-                   j.get("dnear"), j.get("dnear2"), j.get("dmin"),
-                   j.get("near_az_deg"), j.get("yaw_deg"),
-                   _vw[0], _vw[1], j.get("n_indx1")])
-        if len(tl) > TL_MAX:
-            del tl[:len(tl) - TL_MAX]
-        prev_md, prev_s = r["mode"], r["t"]
-        gap = (s - prev_s) if (prev_s is not None and s > prev_s) else 0.0
-        if prev_md in ("deadend_rotate", "deadend_stop") and gap > 0.0:
-            if prev_md == "deadend_rotate":
-                r["rot_s"] += gap
-            else:
-                r["stop_s"] += gap
-        if bool(j.get("forced")) and gap > 0.0:
-            r["forced_s"] += gap
-        cur_dead = md in ("deadend_rotate", "deadend_stop")
-        prev_dead = prev_md in ("deadend_rotate", "deadend_stop")
-        if cur_dead and not prev_dead:
-            r["ep_n"] += 1
-            r["ep_acc"] = 0.0
-        elif cur_dead:
-            r["ep_acc"] += gap
-        elif prev_dead:
-            ep = r["ep_acc"]
-            r["ep_acc"] = 0.0
-            r["ep_max"] = max(r["ep_max"], ep)
-            r["hist"][int(min(11, ep))] += 1
-        r["mode"], r["t"] = md, s
-    return cb
-
-
 def dump():
     out = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "clock": clock,
            "vel_cmd": vel, "latent_space": lat,
-           "cpn_active": act, "cpn_true": n_true, "cpn_duty_s": duty,
-           "defop_debug": ddbg}
+           "cpn_active": act, "cpn_true": n_true, "cpn_duty_s": duty}
     tmp = OUT + ".tmp"
     with open(tmp, "w") as f:
         json.dump(out, f, indent=1)
@@ -379,8 +257,6 @@ for d in range(6):
                                  Float32MultiArray, _mk(lat, d)))
     subs.append(rospy.Subscriber("/drone_%d/planning/cpn_active" % d,
                                  Bool, _mk_act(d)))
-    subs.append(rospy.Subscriber("/drone_%d/defop/debug" % d, String,
-                                 _mk_ddbg(d)))
 t0 = time.time()
 try:
     while not rospy.is_shutdown() and time.time() - t0 < MAX_S:
@@ -404,7 +280,7 @@ DRIVER_TMPL = r"""#!/usr/bin/env bash
 # defop_ab_run 单 cell 驱动（T4 生成）——机制=run_verify_gazebo.sh +
 # gz_closure_run 门序列（P2_WAIT/scorekeeper 在列/start 服务在列/清场点名）。
 # 全程 ROS_MASTER_URI=11411（本工具分配端口）；结束只清本脚本所拉进程树。
-WS=/home/ubuntu/zx2026_defop_ws
+WS=/home/ubuntu/zx2026_arena_ws
 CELL=__CELL__
 BACKEND=__BACKEND__
 ARMSPEC=__ARMSPEC__
@@ -413,8 +289,6 @@ PROBE_OUT=__PROBE_OUT__
 VERIFY_TIMEOUT=__VERIFY_TIMEOUT_EFF__
 export ROS_MASTER_URI=http://127.0.0.1:11411
 export ROS_HOSTNAME=127.0.0.1
-# VAE 推理设备：defop.launch 的 $(optenv VAE_DEVICE cpu) 消费（6 机全跟随）。
-export VAE_DEVICE=__VAE_DEVICE__
 source /opt/ros/noetic/setup.bash
 source $WS/devel/setup.bash
 export GAZEBO_MODEL_PATH=/opt/ros/noetic/share/gazebo-11/models
@@ -466,7 +340,7 @@ rostopic list >/dev/null 2>&1 || { echo "GATE_FAIL:master"; exit 3; }
 
 # defop 臂：6 机推理链单独发车（gazebo.launch 未透传 defop_arm arg，CLI 附参
 # 会报 unused args；单发 defop.launch×6 与 stack_nodes defop 组 include 等价）
-if [ "$ARMSPEC" != "baseline" ]; then
+if [ "$ARMSPEC" = "defop" ]; then
   : > "$CELL/defop_lids"
   for d in 0 1 2 3 4 5; do
     nohup roslaunch defop_nav defop.launch drone_id:=$d >> "$CELL/defop_launch.log" 2>&1 &
@@ -492,7 +366,7 @@ fi
 # 门4 P2_WAIT（防 start 早调被拒；echo 带 timeout 防 latched 空转挂死）
 ST=""
 for i in $(seq 1 60); do
-  ST=$(timeout -k 1 2 rostopic echo -n1 /zx2026/state 2>/dev/null | grep -o '"P[0-9A-Z_]*"' | head -1)
+  ST=$(timeout 2 rostopic echo -n1 /zx2026/state 2>/dev/null | grep -o '"P[0-9A-Z_]*"' | head -1)
   [ "$ST" = '"P2_WAIT"' ] && break; sleep 1
 done
 [ "$ST" = '"P2_WAIT"' ] || { echo "GATE_FAIL:p2wait"; exit 3; }
@@ -507,7 +381,7 @@ for i in $(seq 1 30); do
 done
 rosservice list 2>/dev/null | grep -q '^/zx2026/start$' || { echo "GATE_FAIL:start_svc"; exit 3; }
 # 门7 defop 臂：latent_space 话题在列（vae 活体判据；话题在列≠有消息）
-if [ "$ARMSPEC" != "baseline" ]; then
+if [ "$ARMSPEC" = "defop" ]; then
   for i in $(seq 1 20); do
     rostopic list 2>/dev/null | grep -q '^/drone_0/latent_space$' && break; sleep 1
   done
@@ -526,12 +400,6 @@ VRC=$?
 
 kill -TERM "$PROBE_PID" 2>/dev/null
 sleep 3.5   # 封卷汇合窗（report_settle_s=1.0 race 修复）+ nav_metrics 落盘
-# 设备活体回声（2026-10-01）：defop_vae_node 在 CUDA 不可用时是 warn 后静默回落
-# cpu——「请求了 cuda:0 却跑在 cpu」与「GPU 无收益」在 CSV 上完全同形。故把各机
-# 实际生效设备点出来：请求 cuda:0 时必须 6 个 device=cuda:0，否则本跑作废。
-if [ "$ARMSPEC" != "baseline" ]; then
-  echo "VAE_DEV_SUMMARY: $(grep -ao 'device=[a-z0-9:]*' "$CELL/defop_launch.log" 2>/dev/null | sort | uniq -c | tr '\n' ' ')"
-fi
 echo "DRIVER_DONE rc=$VRC"
 exit 0
 """
@@ -547,7 +415,6 @@ def write_driver(outdir, arm, backend):
     txt = txt.replace("__PROBE_OUT__", os.path.join(outdir, "probe.json"))
     txt = txt.replace("__VERIFY_TIMEOUT__", str(int(VERIFY_TIMEOUT)))
     txt = txt.replace("__VERIFY_TIMEOUT_EFF__", str(int(VERIFY_TIMEOUT) + 240))
-    txt = txt.replace("__VAE_DEVICE__", VAE_DEVICE)
     with open(p, "w", encoding="utf-8") as f:
         f.write(txt)
     os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -839,8 +706,6 @@ def _run_once(cell, outdir, backend):
     oom0 = oom_count()
     bak = os.path.join(outdir, "sim_settings.yaml.bak")
     shutil.copy(CFG, bak)                       # 先备份
-    nbak = os.path.join(outdir, "defop_nav.yaml.bak")
-    shutil.copy(NAVCFG, nbak)                   # 候选臂的 CPN 配置同备份
     notes, gate = [], 0
     timed_out = False
     so, dt = "", 0.0
@@ -878,18 +743,8 @@ def _run_once(cell, outdir, backend):
             time.sleep(0.2)
             if not filecmp.cmp(bak, CFG, shallow=False):
                 notes.append("RESTORE_MISMATCH")
-        shutil.copy(nbak, NAVCFG)               # 候选臂 CPN 配置同还原
-        if not filecmp.cmp(nbak, NAVCFG, shallow=False):
-            shutil.copy(nbak, NAVCFG)
-            time.sleep(0.2)
-            if not filecmp.cmp(nbak, NAVCFG, shallow=False):
-                notes.append("RESTORE_MISMATCH_NAV")
         try:
             os.remove(bak)
-        except OSError:
-            pass
-        try:
-            os.remove(nbak)
         except OSError:
             pass
 
@@ -955,7 +810,7 @@ def _run_once(cell, outdir, backend):
     row["latent_live"], row["rtf"] = lat_live, rtf
     cl, cd, cr = _cpn_summary(os.path.join(outdir, "probe.json"))
     row["cpn_live"], row["cpn_duty_s"], row["cpn_ratio"] = cl, cd, cr
-    if arm != "baseline" and cl > 0 and cr >= 0 and cr < 0.05:
+    if arm == "defop" and cl > 0 and cr >= 0 and cr < 0.05:
         notes.append("cpn_flag_dead")     # 旗恒 False=cpn 静默失效跑成基线
 
     oom1 = oom_count()
@@ -1046,9 +901,8 @@ def dry_run(cells, out_csv, backend_request):
           " @%s)/OOM(dmesg grep -ic oom 前后差)" % MASTER)
     for k, c in enumerate(cells):
         arm = c["arm"]
-        is_defop = arm != "baseline"
-        want_src = "defop" if is_defop else "internal"
-        want_dep = "true" if is_defop else "false"
+        want_src = "defop" if arm == "defop" else "internal"
+        want_dep = "true" if arm == "defop" else "false"
         print("\n[cell %d/%d] %02d_%s_seed%d_r%d  backend=%s"
               % (k + 1, len(cells), k, arm, c["seed"], c["run"],
                  "gazebo" if backend_request in ("auto", "gazebo")
@@ -1065,13 +919,7 @@ def dry_run(cells, out_csv, backend_request):
               % (cur_dep, want_dep,
                  "  # 仅 defop 臂" if want_dep == "true"
                  else "  # baseline=默认值，逐字节不变"))
-        nk = ARM_KEYS.get(arm) or {}
-        if nk:
-            print("  patch defop_nav.yaml: %s"
-                  % ", ".join("%s=%s" % (k, v) for k, v in nk.items()))
-        else:
-            print("  patch defop_nav.yaml: (无，逐字节不变)")
-        if is_defop:
+        if arm == "defop":
             print("  cmd: bash <cell>/driver.sh —— roslaunch arena_world_gazebo"
                   " gazebo.launch + roslaunch defop_nav defop.launch "
                   "drone_id:=0..5")
@@ -1080,7 +928,7 @@ def dry_run(cells, out_csv, backend_request):
                   "逐字节复刻（baseline 默认栈零改动）")
         print("  门: rostopic list → nodes>=20 → /clock(gz) → P2_WAIT → "
               "score/0 在列 → /zx2026/start 在列%s"
-              % (" → latent_space 在列" if is_defop else ""))
+              % (" → latent_space 在列" if arm == "defop" else ""))
         print("  采后: probe.json/launch.log/verify/score/metrics/rosout 归档；"
               "finally 还原 sim_settings.yaml（备份回拷+filecmp 校验 diff 空）")
     print("\nDRY-RUN 结束（共 %d cells）" % len(cells))
@@ -1117,20 +965,13 @@ def main():
                     help="只打印补丁与命令，不动文件不启进程")
     ap.add_argument("--no-rerun", action="store_true",
                     help="关闭污染自动重跑（默认开）")
-    ap.add_argument("--vae-device", default="cpu",
-                    choices=["cpu", "cuda:0", "auto"],
-                    help="VAE 推理设备（2026-10-01 GPU 加速立项）；"
-                         "经 defop.launch $(optenv VAE_DEVICE) 施加到全部 6 机")
     args = ap.parse_args()
-
-    global VAE_DEVICE
-    VAE_DEVICE = args.vae_device
 
     seeds = [int(x) for x in str(args.seeds).split(",") if x.strip()]
     arms = [a.strip() for a in str(args.arms).split(",") if a.strip()]
     for a in arms:
-        if a not in ARM_KEYS:
-            ap.error("未知臂 %r（%s）" % (a, "|".join(ARM_KEYS)))
+        if a not in ("baseline", "defop"):
+            ap.error("未知臂 %r（baseline|defop）" % a)
     out_csv = args.out if os.path.isabs(args.out) else os.path.join(WS, args.out)
 
     # 臂交错（同 seed/run 内 A/B 相邻，防时段漂移混淆臂间差异——matrix_run 同律）

@@ -2,7 +2,7 @@
 # P0-② panic 双轨 E2E：富机 d0 走模板（假 ssh）、贫机 d1 走 bridge MAVLink land
 # 预期：d0 panic OK + d1 panic OK + fake IDLE 收到 LAND seen → PANIC COMPLETE
 set -u
-cd /home/ubuntu/zx2026_defop_ws/tools/gcs || exit 1
+cd /home/ubuntu/zx2026_arena_ws/tools/gcs || exit 1
 OUT=/mnt/c/Users/24882/Desktop/_gcs_panic_e2e.txt
 : > "$OUT"
 

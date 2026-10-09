@@ -17,7 +17,7 @@
 每 cell：补丁（只动值不动注释）→ run_verify.sh → 解析 → 归档 run_logs/matrix_waveb_<ts>/。
 结束恢复两 yaml 原状。wall-monotonic 漂移检测继承 matrix_run 纪律（>30s 污染重跑）。
 
-用法: python3 ~/zx2026_defop_ws/tools/matrix_waveb_run.py
+用法: python3 ~/zx2026_arena_ws/tools/matrix_waveb_run.py
 """
 import glob
 import os

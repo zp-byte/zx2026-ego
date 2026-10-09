@@ -3,7 +3,7 @@
 export ROS_MASTER_URI=http://127.0.0.1:11411
 export ROS_HOSTNAME=127.0.0.1
 source /opt/ros/noetic/setup.bash
-source /home/ubuntu/zx2026_defop_ws/devel/setup.bash
+source /home/ubuntu/zx2026_arena_ws/devel/setup.bash
 export DISPLAY=:0
 export LIBGL_ALWAYS_SOFTWARE=1
 export QT_X11_FORCE_SOFTWARE_GL=1

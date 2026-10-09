@@ -18,7 +18,7 @@ import time
 
 import yaml
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 CFG = WS + "/src/zx2026_common/config/sim_settings.yaml"
 RUNLOGS = WS + "/run_logs"
 VERIFY_TXT = "/tmp/zx2026_verify.txt"

@@ -20,7 +20,7 @@ import sys
 
 import yaml
 
-WS = "/home/ubuntu/zx2026_defop_ws"
+WS = "/home/ubuntu/zx2026_arena_ws"
 sys.path.insert(0, WS + "/tools")
 sys.path.insert(0, WS + "/src/zx2026_common/scripts")
 from matrix_run import CFG, set_top  # noqa: E402

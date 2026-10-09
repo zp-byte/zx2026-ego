@@ -4,7 +4,7 @@
 已随 20260912 判占线重设计退役）。
 
 用法（WSL）：
-  cd ~/zx2026_defop_ws && source /opt/ros/noetic/setup.bash \
+  cd ~/zx2026_arena_ws && source /opt/ros/noetic/setup.bash \
     && source devel/setup.bash && python3 tools/bh_selftest.py
 
 结果写 /tmp/bh_selftest.txt（UTF-8，规避 GBK 控制台）。
@@ -15,14 +15,9 @@
      密枝簇签名）才判占；窗口遗忘/重观测刷新（20260912 分支矩阵定论：
      旧 T 线判占把细枝升 occ 闭合树间走廊 → B 臂 0/3 PASS，判占线移密度
      线——A2 即根因回归测试）
-  A9 带=排除地面/围栏顶 配置回归门。**2026-10-01 口径重定**：旧不变量
-     「带下限 > 1.30m 围栏顶」（20260912_223444 矩阵根因：带 [0.8,2.0] 把
-     1.30m 围栏环放进证据积分=实心墙判占 → pads→场内 2D A* 只能绕环外 →
-     OOB 全灭；下限抬 1.45 围栏/平台/桶全排除）**随外部 SDF 场景作废**：
-     现役围栏高 2.80（scene_topology static_obstacles，注释明写「2.80 > 点云
-     高度带上限 2.6，围栏顶缘点仍被排除」）→ 带 [0.70,2.60] 的立论反转为
-     **上限**须低于围栏顶。A9 双查配置与常量防回退，判据三条：下限 > 地面
-     杂波、上限 < 围栏顶−裕度、上限 ≥ 巡航高度（带须盖住巡航层）。
+  A9 带下限>围栏顶 1.30 配置回归门（20260912_223444 矩阵根因：带 [0.8,2.0]
+     把 1.30m 围栏环放进证据积分=实心墙判占 → pads→场内 2D A* 只能绕环外
+     → OOB 全灭；下限抬 1.45 围栏/平台/桶全排除，A9 双查配置与常量防回退）
   B. bh_uncertain_t 走廊扫描：正中命中/侧向/后方/超距/全空
   C. 集成（真实 Scene + 模拟飞行）：无人机沿枝轴从枝梢侧飞向带枝树——
      C1 首个注入圈：注入格（稀疏签名载体）计数 ≤3 且 O4 走廊扫描 t>0
@@ -37,7 +32,6 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-WS = os.path.expanduser("~/zx2026_defop_ws")
 # 只插 arena_nav：nav_node 模块顶要 import zx2026_common.msg（devel 生成包），
 # 若把 src/zx2026_common/scripts 插到 sys.path 首位会遮蔽生成包（源包无 msg
 # 子包）→ No module named 'zx2026_common.msg'（与 vo_selftest 同款结构）。
@@ -56,7 +50,11 @@ from zx2026_common import config as cfg
 from zx2026_common import geometry as geo
 from zx2026_common.scene import Scene
 
-CFG = WS + "/src/zx2026_common/config/sim_settings.yaml"
+CFG = os.path.join(HERE, "..", "src", "zx2026_common", "config",
+                   "sim_settings.yaml")
+# 刚性格锁存线自测常量（甲-C 2026-10-08，与 sim_settings.yaml 的
+# evidence.rigid_min_pts 同步，A13 双查——A9 同款配置回归门）
+BH_RIGID_PTS = 36
 OUT = "/tmp/bh_selftest.txt"
 
 # 与 sim_settings branch_handling 同值（selftest 用常量，配置变更时此处同步）
@@ -71,9 +69,8 @@ RES = 0.5
 LIDAR_AZ = 72
 LIDAR_EL = [-0.5, -0.25, 0.0, 0.25, 0.5]
 RANGE = 5.0
-MAP_BAND = (0.70, 2.60)  # = sim_settings branch_handling.map_z_band（见 A9；须逐值同步）
-FENCE_TOP = 2.80         # = scene_topology static_obstacles 围栏柱顶 z（A9 上限判据）
-CRUISE_Z = 2.4           # = competition_rules heights.cruise_z（A9 覆盖判据）
+MAP_BAND = (0.70, 2.60)  # ego 证据带（与 sim_settings map_z_band 同步；
+# 契约见 A9：上缘盖巡航 2.25、不入冠球下缘 2.81、下缘低于网顶 2.50）
 
 RESULTS = []
 
@@ -173,36 +170,77 @@ def test_tier():
                      BH_TRUST_R, BH_SWAY_DENSE, 100, 100, g2w,
                      np.array([0.0, 0.0]))
     check("A8 重观测刷新", (10, 10) in ev, "ev=%s" % ev)
+    # A10 刚性格不遗忘（甲-C 回归门）：树干级证据格 cycle0 观测、cycle9 重建
+    # ——非刚性格同拍已删（9-0>3），刚性格保留且仍在 ev（锁存不删条目）
+    ev = {(10, 10): [40.0, 0], (11, 10): [2.0, 0]}
+    occ, unc = bh_evidence_tier(ev, 9, BH_WINDOW_CYCLES, BH_T_NEAR,
+                                BH_T_FAR, BH_TRUST_R, BH_SWAY_DENSE,
+                                100, 100, g2w, np.array([0.0, 0.0]),
+                                {(10, 10)})
+    check("A10 刚性格不遗忘（同拍普通格已删）",
+          (10, 10) in occ and (10, 10) in ev and (11, 10) not in ev,
+          "ev=%s occ_has=%s" % (sorted(ev), (10, 10) in occ))
+    # A11 刚性格恒判占：远档 8 点（<远档线 12，本会降 unc）因刚性格仍判 occ
+    ev = {(60, 60): [8.0, 0]}
+    occ, unc = bh_evidence_tier(ev, 1, BH_WINDOW_CYCLES, BH_T_NEAR,
+                                BH_T_FAR, BH_TRUST_R, BH_SWAY_DENSE,
+                                100, 100, g2w, np.array([0.0, 0.0]),
+                                {(60, 60)})
+    check("A11 刚性格远档不降级",
+          (60, 60) in occ and (60, 60) not in unc,
+          "occ=%s unc=%s" % ((60, 60) in occ, (60, 60) in unc))
+    # A12 rigid=None ⇒ 逐位原行为（rigid_min_pts: 0 时的运行路径）
+    ev = {(10, 10): [40.0, 0]}
+    bh_evidence_tier(ev, 9, BH_WINDOW_CYCLES, BH_T_NEAR, BH_T_FAR,
+                     BH_TRUST_R, BH_SWAY_DENSE, 100, 100, g2w,
+                     np.array([0.0, 0.0]))
+    check("A12 rigid=None 逐位原行为（窗口外照删）",
+          (10, 10) not in ev, "ev=%s" % ev)
+    # A13 配置回归门：rigid_min_pts 与自测常量同步（A9 同款双查）
+    ev_cfg = cfg.load("sim_settings.yaml").get("closed_loop", {}).get(
+        "branch_handling", {}).get("evidence", {})
+    check("A13 rigid_min_pts 配置同步",
+          int(ev_cfg.get("rigid_min_pts", 0)) == BH_RIGID_PTS,
+          "cfg=%s const=%d" % (ev_cfg.get("rigid_min_pts"), BH_RIGID_PTS))
 
 
-# ---- A9. 带=排除地面/围栏顶（配置回归门） -----------------------------------
+# ---- A9. 带下限>围栏顶（配置回归门） ---------------------------------------
 def test_band_fence_guard():
-    """20260912_223444 + 2026-10-01 双口径回归门。
+    """ego 版带契约回归门（2026-10-08 重写；arena 围栏环门作废）。
 
-    **旧口径**（已作废，留作历史）：带下限须 > 1.30m 围栏顶——1.30m 围栏环
-    一旦进带即实心墙判占（密度线不救墙——墙回波远超任何判占线）→ pads
-    （环外）→ 场内 2D A* 只能绕环外 → 必然 OOB 全灭。
-
-    **现口径**：围栏高 2.80（scene_topology static_obstacles，注释原文
-    「2.80 > 点云高度带上限 2.6，围栏顶缘点仍被排除」）→ 约束反转成上限：
-    带的职责是**同时**排掉地面杂波与围栏顶缘，且必须盖住巡航层（否则
-    巡航高度的树/枝回波整层进不了占用图，A* 变瞎——比误判占更危险）。
-    三条判据 + 常量同步双查（MAP_BAND 漂移=复刻的 _on_cloud 带过滤与
-    实机配置失同步，C 集成臂会跟着算错）。
+    原门断言 arena_ws 围栏环（西 x≈-18.6、高 1.30 ⇒ 带下限须在其上），
+    ego 场景没有该环——Scene 实测 ego 围栏=场地边界墙（x/y=±30、z
+    0..2.8）+ 西林缘网（kind=net，x≈-22.8、y 4..12、z 0..2.5），且
+    render_boxes: true 两者均入画。ego 带契约四条：
+      ① 带与自测常量同步（MAP_BAND 漂移=_on_cloud 带过滤与配置失同步）
+      ② 上缘 ≥ 巡航（competition_rules heights.cruise_z=2.25，证据须盖住
+        飞行高度）
+      ③ 上缘 ≤ 冠球下缘−0.10（冠不入证据带；余量仅 0.21 ⇒ 不得上调，
+        见 sim_settings render_crowns 注释）
+      ④ 下缘 < 网顶 2.50（网须在带内可封格——collides_xy 本就把 net
+        计入 A* 障碍，甲-C 刚性格锁存网回波=语义正确而非 20260912 墙
+        病灶；那次病根是细枝格，由 rigid_min_pts=36 + A2/C2 把关）
     """
-    bh = cfg.load("sim_settings.yaml").get("closed_loop", {}).get(
-        "branch_handling", {})
-    band = bh.get("map_z_band", [])
-    ok_len = len(band) == 2
-    ok_lo = ok_len and band[0] > 0.30          # 排地面/贴地杂波
-    ok_hi = ok_len and band[1] < FENCE_TOP - 0.10   # 排围栏顶缘
-    ok_cov = ok_len and band[0] <= CRUISE_Z <= band[1]   # 盖住巡航层
-    ok_const = tuple(band) == MAP_BAND
-    ok = ok_len and ok_lo and ok_hi and ok_cov and ok_const
-    check("A9 带=排地面+排围栏顶+盖巡航+常量同步", ok,
-          "config=%s MAP_BAND=%s [len=%s lo>0.30=%s hi<%.2f=%s 覆盖cruise%.2f=%s]"
-          % (band, list(MAP_BAND), ok_len, ok_lo, FENCE_TOP - 0.10, ok_hi,
-             CRUISE_Z, ok_cov))
+    s = cfg.load("sim_settings.yaml")
+    band = s.get("closed_loop", {}).get("branch_handling", {}).get(
+        "map_z_band", [])
+    cr = cfg.load("competition_rules.yaml").get("heights", {}).get(
+        "cruise_z", 0.0)
+    sc = Scene()
+
+    def _crown_bottom(t):
+        r = max(t.crown_r or 0.0, (t.crown_h or 0.0) / 2.0)
+        return t.crown_z - r
+
+    trees = [t for t in sc.obstacles
+             if t.kind == "tree" and t.cx is not None]
+    crown_lo = min(_crown_bottom(t) for t in trees)
+    ok = (len(band) == 2 and tuple(band) == MAP_BAND
+          and band[1] >= cr and band[1] <= crown_lo - 0.10
+          and band[0] < 2.50)
+    check("A9 带契约(ego)：同步+盖巡航+冠外+网入带", ok,
+          "config=%s MAP_BAND=%s cruise=%.2f crown_lo=%.2f"
+          % (band, list(MAP_BAND), cr, crown_lo))
 
 
 # ---- B. 不确定走廊扫描 ------------------------------------------------------
@@ -256,25 +294,6 @@ def test_integration():
         scene = Scene()
     finally:
         patch_branches("false")
-    # ---- 冠中和（2026-10-01，云杉林导入连带） ------------------------------
-    # 本臂的被测对象是**枝回波证据分层**（稀疏单点不封格 / 密集回波封格），
-    # 不是树的碰撞契约。云杉体制下冠是低矮宽大体量反射面（冠底中位 1.22
-    # ≈ 巡航 1.2），程序枝（0.8-2.6m）与冠体在空间上重合 → 注入格的近邻
-    # 冠面回波本身就远超判占线，注入格被**合法**判占（冠是真障碍），稀疏
-    # 签名在物理上不可测。故本臂显式把冠从 raycast/collides 里摘掉，退回
-    # 「干+枝」场景，使被测变量唯一。冠的四层契约由 branch_selftest 与
-    # 实弹 E2E 覆盖，不在此臂重复。
-    # 注：现役外部 SDF 场景 branches.enabled=false（sim_settings:654 契约
-    # 「树干+冠包络两圆柱」），本臂的 patch_branches("true") 是自建的
-    # 程序枝测试台，与发射出的世界无关。2026-10-01 杨树林导入后表
-    # meta.branch_file 真枝**覆盖**程序枝（scene.py:367-370）——真枝梢
-    # z≥4.66，本臂窗口 [1.52,1.77] 候选必空 ⇒ 显式清掉真枝后按同一
-    # br_rng 流补程序枝（测试台语义不变；不动表文件，避免硬杀遗留脏 meta）。
-    for ob in scene.obstacles:
-        if ob.kind == "tree":
-            ob.branches = None
-            scene._decorate_tree(ob)
-    scene._crown_z_range = lambda ob: None
     v = scene.venue
     g_x0, g_y0 = -v["size"][0] / 2.0, -v["size"][1] / 2.0
     g_nx, g_ny = int(v["size"][0] / RES), int(v["size"][1] / RES)
@@ -288,12 +307,10 @@ def test_integration():
         return (g_x0 + (ix + 0.5) * RES, g_y0 + (iy + 0.5) * RES)
 
     # 候选枝：枝梢（注入射线瞄准点）z∈[1.52,1.77]——≥1.52=梢部命中点
-    # （z≥梢-0.082，枝半径+余量）稳进带 [0.70,2.60] 可被映射；≤1.77=
-    # 枝面顶 ≤1.79 低于本臂测试台飞行高度 FLY_Z=1.8（测试台本地常量，
-    # 与现役 cruise 2.4 解耦），机在枝上方飞过不共线相撞、方位角任意
-    # （飞行方向沿枝轴向）。20260912_223444 带下限 0.8→1.45（围栏排除）
-    # 后窗口随带上移（原 zmax∈[0.85,1.4]）；2026-10-01 带重定
-    # [0.70,2.60]（围栏 2.80 成上限依据）后窗口原样仍成立。
+    # （z≥梢-0.082，枝半径+余量）稳进带 [1.45,2.0] 可被映射；≤1.77=
+    # 枝面顶 ≤1.79 低于无人机 1.8m 巡航，机在枝上方飞过不共线相撞、
+    # 方位角任意（飞行方向沿枝轴向）。20260912_223444 带下限 0.8→1.45
+    # （围栏排除）后窗口随带上移（原 zmax∈[0.85,1.4]）。
     cand = []
     for ob in scene.obstacles:
         if ob.kind != "tree" or not ob.branches:
@@ -393,10 +410,9 @@ def test_integration():
                     pts.append((pos[0] + d[0] * t, pos[1] + d[1] * t,
                                 pos[2] + d[2] * t))
         # 注入：对枝首直接射线（同选择阶段的 vis 判据）。命中点 z∈[梢z,1.8]
-        # ⊂ 带 [0.70,2.60]（梢窗 [1.52,1.77] 保证）——注入格=稀疏签名载体
-        # （1 点/圈；直射 lidar 对本圈近段枝格有时本身就密（实测可到 27
-        # 计数→occ，密目标语义正确），C2 的稀疏前提由 inj_sweep 逐圈实测
-        # 记账（见下），不再假定）。
+        # ⊂ 带 [1.45,2.0]（梢窗 [1.52,1.77] 保证）——注入格=稀疏签名载体
+        # （1 点/圈；带下限抬 1.45 后枝贴巡航高度，直射 lidar 对近段枝格
+        # 本身就密（实测 27 计数→occ，密目标语义正确），稀疏断言只看注入格）。
         inj_cell = None
         vx = tip[0] - px
         vy = tip[1] - py
@@ -410,16 +426,6 @@ def test_integration():
                 if geo.point_segment_dist(p, br[:3], br[3:6]) <= brr + 0.06:
                     pts.append(p)
                     inj_cell = g2c(p[0], p[1])
-        # C2 稀疏前提逐圈记账：本轮**直射扫描**落进注入格的点数（含注入点
-        # 自身）。C2 断言的成立前提是"注入格=稀疏签名载体"；若直射扫描本身
-        # 就往该格打 >occ 线 的点（近段枝/树干贴脸，密目标语义），那 C2 的
-        # 被测对象不存在——此时该判 FAIL 还是"前提不满足"必须可分辨，
-        # 否则无法区分"证据层回归"与"候选枝选得不合适"。
-        inj_sweep = 0
-        if inj_cell is not None:
-            inj_sweep = sum(1 for (x, y, z) in pts
-                            if MAP_BAND[0] <= z <= MAP_BAND[1]
-                            and g2c(x, y) == inj_cell)
         # _on_cloud 复刻（O1 分支：band + 证据计数），同时分类枝点/枝格
         b_pts = 0
         b_cells = set()
@@ -453,8 +459,7 @@ def test_integration():
                        {c: occ_ev[c][0] for c in b_cells},
                        inj_cell,
                        occ_ev[inj_cell][0] if inj_cell is not None
-                       and inj_cell in occ_ev else None,
-                       inj_sweep))
+                       and inj_cell in occ_ev else None))
 
     # 阶段1.5 密集回波：末位置原地一圈，枝梢命中点同格注入 6 点（树干/
     # 密枝簇签名：近距大目标多波束同帧命中同格）——判占线 dense×T_near=6
@@ -528,58 +533,13 @@ def test_integration():
         c1_detail = "step=%d inj=%s cnt=%s t_unc=%.2f" % (
             first_b[0], first_b[9], first_b[10], first_b[4])
     check("C1 稀疏首见不判占+O4 命中", c1_ok, c1_detail)
-    # C2 稀疏注入格接近期零判占（20260912 矩阵根因回归：旧 T 线判占把细枝
+    # C2 稀疏注入格接近期零判占：接近全程（未注入密集回波）注入格 ∉ occ
+    # ——细枝单点/圈回波不封格（20260912 矩阵根因回归：旧 T 线判占把细枝
     # 升 occ 闭合树间走廊 → 北绕界外 OOB + 西墙滑扫，B 臂 0/3 PASS）。
-    # 2026-10-01 拆分（云杉导入把本断言推到台前）：
-    #   C2a 瞬态稀疏：注入格"本圈扫掠点数 < 判占线"时必须判**不占**——这是
-    #       证据层承诺的语义（细枝不判死只减速），严格断言。
-    #   C2b 持续稀疏：**已知算法语义，非本断言所守**——见下。
-    #
-    # ⚠ 发现（生产算法，非测试台，留待裁决）：`_occ_ev[c][0]` 是**累积计数**，
-    #   不是文档所称的"窗口内观测计数"（bh_evidence_tier docstring :89
-    #   「窗口内观测计数替代一点即占」）。window_cycles 只做 TTL 遗忘：格子只要
-    #   每周期被重观测一次就永不衰减 → **1 点/圈 的持续单点回波在第 6 圈
-    #   必然越过判占线**（dense×T_near=6），与"细枝不判死"的设计本意冲突，
-    #   且方向上是把 20260912 的过度判占根因重新引入（悬停/慢接近时静态细枝
-    #   回波即属此列）。实测 cnt 轨迹 1→2→3→4→6→12。
-    #   现役云杉场景 **不触发**：sim_settings:654 外部 SDF 场景契约
-    #   `branches.enabled: false`（干+冠两圆柱），程序枝根本不存在于发射的
-    #   世界里，本臂是自建测试台。故不改生产语义（改=行为变更须矩阵过线），
-    #   只把该行为钉成可见的回归锚。
-    OCC_LINE = BH_SWAY_DENSE * BH_T_NEAR
+    # 直射密格 occ 不在此断言（密目标语义，几何相依）。
     inj_occ = [p[0] for p in appr if p[9] is not None and p[9] in p[7]]
-    inj_sweep_of = {p[0]: p[11] for p in appr if p[9] is not None}
-    inj_cnt_of = {p[0]: p[10] for p in appr if p[9] is not None}
-    # 判据用**累积计数**（判占决策的实际输入），不用本圈扫掠点数——后者
-    # 只是"本圈贡献"，累积才是被决策的量（step4 本圈仅 2 点却已占，因为
-    # 前 5 圈各 1 点已积到 6：那属持续类，不是瞬态稀疏）。
-    real_occ = [s for s in inj_occ if inj_cnt_of.get(s, 1e9) < OCC_LINE]
-    sparse_steps = [s for s in inj_sweep_of if inj_cnt_of[s] < OCC_LINE]
-    check("C2a 稀疏格零判占（计数在判占线以下者不得进 occ）",
-          not real_occ and bool(sparse_steps),
-          "inj_occ_steps=%s real=%s(计数<%.0f 仍判占=证据层回归) 稀疏圈=%s "
-          "sweep=[%s] cnt=[%s]"
-          % (inj_occ, real_occ, OCC_LINE, sparse_steps,
-             ",".join("%d:%d" % (s, inj_sweep_of[s]) for s in sorted(inj_sweep_of)),
-             ",".join("%d:%s" % (s, inj_cnt_of[s]) for s in sorted(inj_cnt_of))))
-    # C2b 锚：持续（每圈都有观测的）回波格，其累积计数在多长跨度内越线。
-    # 语义承诺（docstring「窗口内观测计数」）下，窗口 = window_cycles = 3 圈，
-    # 纯 1 点/圈 的持续回波计数应封顶在 3，**永不到线**；实现是累积 → 越线。
-    # 这里用**性质**而非等值做锚（越线圈次随几何微抖）：持续≥OCC_LINE 圈
-    # 仍在被观测的注入格，必须已经在某圈越线。若哪天改成真窗口化，本锚会
-    # 红——那不是回归，是语义变更，须显式改写并说明（见上方 ⚠）。
-    series = sorted(inj_sweep_of)
-    pers = [s for s in series if inj_sweep_of[s] >= 1
-            and s >= series[0] + BH_WINDOW_CYCLES]      # 持续超过一个窗口
-    cross = [s for s in series if inj_cnt_of[s] >= OCC_LINE]
-    # 条件式：**前提不成立不算失败**（候选枝接近窗口不足一个窗口时本就无
-    # 持续回波可锚——杨树林臂即 3 圈，无持续圈）。前提成立（有持续格）却
-    # 不越线 = 计数已窗口化 = 语义变更，红。
-    check("C2b 持续累积越线锚（已知语义，非缺陷判据；前提式）",
-          (not pers) or bool(cross),
-          "OCC_LINE=%.0f 窗口=%d 圈数=%s 持续圈=%s 越线圈=%s cnt轨迹=[%s]"
-          % (OCC_LINE, BH_WINDOW_CYCLES, len(series), pers, cross,
-             ",".join("%d:%s" % (s, inj_cnt_of[s]) for s in series)))
+    check("C2 稀疏注入格接近期零判占", not inj_occ,
+          "inj_occ_steps=%s" % inj_occ)
     # C3 密集回波判占：同圈 6 点同格（树干/密枝簇签名）→ 枝格判占（A* 绕行）
     dense_p = phases[-1] if phases and phases[-1][0] == N_STEPS else None
     d_ok = dense_p is not None and len(dense_p[7]) > 0 and len(dense_p[6]) > 0

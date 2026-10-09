@@ -3,11 +3,11 @@
 export ROS_MASTER_URI=http://127.0.0.1:11411
 export ROS_HOSTNAME=127.0.0.1
 source /opt/ros/noetic/setup.bash
-source /home/ubuntu/zx2026_defop_ws/devel/setup.bash
+source /home/ubuntu/zx2026_arena_ws/devel/setup.bash
 export DISPLAY=:0
 
-find /home/ubuntu/zx2026_defop_ws/src -name '*.py' -exec chmod +x {} + 2>/dev/null
-bash /home/ubuntu/zx2026_defop_ws/kill_all.sh >/dev/null 2>&1
+find /home/ubuntu/zx2026_arena_ws/src -name '*.py' -exec chmod +x {} + 2>/dev/null
+bash /home/ubuntu/zx2026_arena_ws/kill_all.sh >/dev/null 2>&1
 sleep 2
 
 setsid nohup roslaunch arena_world_gazebo gazebo.launch >/tmp/zx2026_gazebo_fix.log 2>&1 < /dev/null &

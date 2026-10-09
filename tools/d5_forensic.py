@@ -10,7 +10,7 @@ import csv
 import io
 import time
 
-PATH = "/home/ubuntu/zx2026_defop_ws/run_logs/nav_metrics_ts.csv"
+PATH = "/home/ubuntu/zx2026_arena_ws/run_logs/nav_metrics_ts.csv"
 
 raw = open(PATH, "rb").read().decode("utf-8", "replace").replace("\x00", "")
 rows = []

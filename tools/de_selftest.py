@@ -11,6 +11,18 @@
   S5 (P2) goal 对角沿线上有点云真树：该方向被走廊检查淘汰
   S6 (P2) 点云在走廊外：对角方向不受罚
   S7 (P2) 四周沿线上全是真树点云：全淘汰 → None 悬停
+起 2 撞点淘汰（contact_block_r）：
+  S8 壳内 0.35m 处有撞点（=真树）在 goal 对角上：对角方向被淘汰，改选背离/切向
+  S9 同场景 contact_block_r=0（默认关）：逐位复现旧行为（与 S1 同解）
+  S10 同 S8 但撞点 t 已过 TTL：不淘汰，回到 S1 解
+  S11 撞点在本机后方（t<=0）：不淘汰
+起 2 撞点推断 contact_point_of（纯函数，两路）：
+  L1 点云确认（clr ≤ block_r）：接触点 == est + u*clr（逐位等于那个点云点）
+  L2 盲撞（clr > block_r）且水平速度够：接触点 == est + dr*v̂
+  L3 盲撞但水平速度 < blind_v：None（低速贴树挤入方向无意义）
+  L4 blind_v=0（本路关）：None，即使速度够
+  L5 block_r=0（总关）：None
+  L6 无点云（clr_u=None）+ 速度够：走盲撞路
 状态机（P5 退出迟滞，显式时刻驱动 _de_tick）：
   H1 正常迟滞退出：规划恢复后仍保持逃逸 ≥exit_hyst_s 才交还
   H2 迟滞窗口内规划再失败：计时清零重计
@@ -18,18 +30,25 @@
 """
 import importlib.util
 import math
+import os
 import types
 
 import numpy as np
 
-spec = importlib.util.spec_from_file_location(
-    "nav_node", "/home/ubuntu/zx2026_defop_ws/src/arena_nav/scripts/nav_node.py")
+# 本仓约定：按 __file__ 定位，绝不写死工作区绝对路径（旧版写死
+# ~/zx2026_arena_ws ⇒ 该副本自 2026-09-29 起已是陈旧拷贝，本自测此前一直
+# 在测另一个工作区的 nav_node，对本仓改动全盲）。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_NV = os.path.join(_HERE, "..", "src", "arena_nav", "scripts", "nav_node.py")
+spec = importlib.util.spec_from_file_location("nav_node", _NV)
 nav = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nav)
 H = nav.NavNode
+# 无 ROS 运行时：撞点 TTL 剪枝读 rospy.get_time()，打桩为固定钟
+nav.rospy.get_time = lambda: 0.0
 
 
-def make_self(occ, est, goal, res=0.5, cloud=None):
+def make_self(occ, est, goal, res=0.5, cloud=None, contacts=None, cblock_r=0.0):
     s = types.SimpleNamespace()
     ny, nx = occ.shape
     s._gocc_infl = occ
@@ -46,6 +65,11 @@ def make_self(occ, est, goal, res=0.5, cloud=None):
     s._de_goal_bias = 1.5
     s._de_ray = 3.0
     s._de_cloud_r = 1.0
+    # 起 2 撞点淘汰桩：contacts=[(x,y,t)]，cblock_r=0 即关（默认，逐位原行为）
+    s._de_contacts = list(contacts) if contacts else []
+    s._de_cblock_r = cblock_r
+    s._de_cblock_ttl = 12.0
+    s._de_cblock_n = 0
     # M2 bounce_corridor 桩补（落地时未同步 selftest，存量破损修复）
     s._bc_enabled = False
     s._bc_w = 1.0
@@ -126,6 +150,99 @@ d7 = H._de_pick_dir(make_self(
 print("S7 dir:", d7)
 assert d7 is None, "S7 fail"
 
+# ---- 起 2 撞点淘汰（contact_block_r）----------------------------------------
+# 复刻现场形态：自机在对称接触壳中心，真树在壳内部 ~0.35m 处、恰在 goal 对角上。
+_HIT = (0.247, 0.247)   # ≈0.35m，方向 = goal 对角（45°），在壳 [-1.0,1.5]^2 内部
+
+# S8 开：对角被撞点走廊淘汰 ⇒ 不得再选对角（治"推回同一棵树"）
+s8 = make_self(occ1, (0.0, 0.0), (8.0, 8.0),
+               contacts=[(_HIT[0], _HIT[1], 0.0)], cblock_r=1.0)
+d8 = H._de_pick_dir(s8)
+print("S8 dir:", d8, "ang=%.3f" % ang_of(d8), "cblock=%d" % s8._de_cblock_n)
+assert d8 is not None, "S8 fail: 应仍有可行方向"
+assert abs(ang_of(d8) - math.pi / 4) > 0.6, "S8 fail: 仍朝刚撞上的障碍选向"
+assert s8._de_cblock_n > 0, "S8 fail: 撞点淘汰未生效（计数为 0）"
+
+# S9 关（默认）：同一撞点在表内但 contact_block_r=0 ⇒ 逐位复现 S1
+s9 = make_self(occ1, (0.0, 0.0), (8.0, 8.0),
+               contacts=[(_HIT[0], _HIT[1], 0.0)], cblock_r=0.0)
+d9 = H._de_pick_dir(s9)
+print("S9 dir:", d9, "ang=%.3f" % ang_of(d9), "cblock=%d" % s9._de_cblock_n)
+assert d9 == d1, "S9 fail: 关位未逐位复现旧行为"
+assert s9._de_cblock_n == 0, "S9 fail: 关位不应有淘汰计数"
+
+# S10 TTL 过期：撞点记录 t=-100（> TTL 12）⇒ 不淘汰，同 S1
+s10 = make_self(occ1, (0.0, 0.0), (8.0, 8.0),
+                contacts=[(_HIT[0], _HIT[1], -100.0)], cblock_r=1.0)
+d10 = H._de_pick_dir(s10)
+print("S10 dir:", d10, "ang=%.3f" % ang_of(d10), "cblock=%d" % s10._de_cblock_n)
+assert abs(ang_of(d10) - math.pi / 4) < 0.5, "S10 fail: TTL 过期仍被淘汰"
+assert s10._de_cblock_n == 0, "S10 fail: TTL 过期不应淘汰"
+
+# S11 撞点在本机后方：对 t<=0 的方向不构成淘汰（前向不受影响，仍选 goal 对角）
+s11 = make_self(occ1, (0.0, 0.0), (8.0, 8.0),
+                contacts=[(-0.247, -0.247, 0.0)], cblock_r=1.0)
+d11 = H._de_pick_dir(s11)
+print("S11 dir:", d11, "ang=%.3f" % ang_of(d11), "cblock=%d" % s11._de_cblock_n)
+assert abs(ang_of(d11) - math.pi / 4) < 0.5, "S11 fail: 后方撞点应不影响前向选向"
+
+
+# ---- 起 2 撞点推断 contact_point_of（模块级纯函数）---------------------------
+CP = nav.contact_point_of
+DR = 0.25
+
+
+def near(a, b, tol=1e-9):
+    return a is not None and abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
+
+
+# L1 点云确认：clr=0.32 ≤ block_r=1.0 ⇒ 接触点 = est + u*clr
+p, why = CP(0.0, 0.0, 0.32, (0.6, 0.8, -0.1), 0.0, 0.0, 1.0, 0.15, DR)
+print("L1", p, why)
+assert near(p, (0.192, 0.256)) and why == "cloud", "L1 fail"
+
+# L2 盲撞 + 速度够：clr=2.38 > 1.0 ⇒ 接触点 = est + dr*v̂（正东 1.0）
+p, why = CP(0.0, 0.0, 2.38, (1.0, 0.0, 0.0), 1.0, 0.0, 1.0, 0.15, DR)
+print("L2", p, why)
+assert near(p, (DR, 0.0)) and why == "blind", "L2 fail"
+
+# L2b 斜行进：v=(3,4) → |v|=5 → 接触点 = est + dr*(0.6,0.8)
+p, why = CP(0.0, 0.0, 9.9, None, 3.0, 4.0, 1.0, 0.15, DR)
+print("L2b", p, why)
+assert near(p, (DR * 0.6, DR * 0.8)) and why == "blind", "L2b fail"
+
+# L3 盲撞但速度 < blind_v：None（方向无意义）
+p, why = CP(0.0, 0.0, 2.38, (1.0, 0.0, 0.0), 0.05, 0.0, 1.0, 0.15, DR)
+print("L3", p, why)
+assert p is None, "L3 fail"
+
+# L4 blind_v=0（本路关）：None，即使速度够
+p, why = CP(0.0, 0.0, 2.38, (1.0, 0.0, 0.0), 1.0, 0.0, 1.0, 0.0, DR)
+print("L4", p, why)
+assert p is None, "L4 fail"
+
+# L5 block_r=0（总关）：None
+p, why = CP(0.0, 0.0, 0.32, (0.6, 0.8, 0.0), 1.0, 0.0, 0.0, 0.15, DR)
+print("L5", p, why)
+assert p is None, "L5 fail"
+
+# L6 无点云（clr_u=None）+ 速度够：走盲撞路
+p, why = CP(1.0, 2.0, 1e9, None, 0.0, 1.0, 1.0, 0.15, DR)
+print("L6", p, why)
+assert near(p, (1.0, 2.0 + DR)) and why == "blind", "L6 fail"
+
+# S12 端到端（=drone5 现场形态）：goal 正东、机正东行进、障碍在正东但**点云看漏**。
+# 盲撞路给出接触点 → 逃逸不得再选正东（否则就是"推回同一棵树"）。
+_c, _w = CP(0.0, 0.0, 2.38, (1.0, 0.0, 0.0), 1.0, 0.0, 1.0, 0.15, 0.25)
+print("S12 推断出的撞点:", _c, _w)
+s12 = make_self(occ1, (0.0, 0.0), (8.0, 0.0),
+                contacts=[(_c[0], _c[1], 0.0)], cblock_r=1.0)
+d12 = H._de_pick_dir(s12)
+print("S12 dir:", d12, "ang=%.3f" % ang_of(d12), "cblock=%d" % s12._de_cblock_n)
+assert d12 is not None, "S12 fail: 应仍有可行方向"
+assert abs(ang_of(d12)) > 0.6, "S12 fail: 仍朝盲撞方向（正东）选向"
+assert s12._de_cblock_n > 0, "S12 fail: 淘汰未生效"
+
 
 # ---- P5 退出迟滞状态机（_de_tick，显式时刻驱动；rospy 日志打桩） ------------
 _logs = []
@@ -147,11 +264,16 @@ def make_tick_self():
     s._de_exit_hyst = 2.5
     s._de_dwell = 1.2
     s._plan_fail_since = None
+    # W7-C1 撞后镇定窗桩补（_de_tick 逃逸分支读该值；-1e9=窗未开）
+    s._ph_hold_until = -1e9
+    # 起 2 撞点淘汰桩补（_de_tick engage/重选日志读这两项）
+    s._de_contacts = []
+    s._de_cblock_n = 0
     # W1 rescue_quiet 桩补（de 退出爬坡窗钩子读旗；关=不置窗）
     s._swq_enabled = False
     s._swq_ramp = 2.5
     s._swq_until = -1e9
-    s._de_pick_dir = lambda: (1.0, 0.0)
+    s._de_pick_dir = lambda now=None: (1.0, 0.0)
     s._de_dir_str = types.MethodType(H._de_dir_str, s)
     return s
 

@@ -5,7 +5,7 @@ import glob
 import os
 import re
 
-D = os.path.expanduser("~/zx2026_defop_ws/run_logs/matrix_w1_20260903_203004")
+D = os.path.expanduser("~/zx2026_arena_ws/run_logs/matrix_w1_20260903_203004")
 for c in sorted(os.listdir(D)):
     p = os.path.join(D, c, "evidence.txt")
     if not os.path.exists(p):

@@ -130,7 +130,7 @@ def test_deploy_files():
     assert p["topics"]["stage"] is None                    # 非 1 号机：回声门
     assert p["topics"]["mission"] == "/zx2026/mission/{id}"
     assert p["topics"]["metrics"] == "/drone_{id}/nav_metrics"
-    assert p["topics"]["liveness"] == ["/setpoints_cmd"]   # 09-27 定谳换源
+    assert p["topics"]["liveness"] == ["/position_cmd"]
     # launch 三桥同源参数挂点在文件里（防 launch 重排丢参数的回归）
     with open(os.path.join(WS,
                            "src/arena_bridges/launch/real_fleet.launch"),
@@ -161,7 +161,7 @@ def test_real_venue():
     h = rl["heights"]
     assert h["drop_hover_z"] == 1.5 and h["identify_z"] == 1.9 \
         and h["drop_mid_z"] == 1.70, h          # 用户口径：1.5=释放悬停高
-    assert h["cruise_z"] == 2.4 and h["flight_z_ceiling"] == 4.5
+    assert h["cruise_z"] == 1.2 and h["flight_z_ceiling"] == 4.5
     assert rl["time_limit_s"] == 1500           # 真机 25min（sim 压缩 180 勿带上机）
     assert rl["rule"]["geofence"][2] == [50.35, 50.35]
     assert rl["rule"]["return_through_forest"] is False

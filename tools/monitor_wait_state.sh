@@ -2,7 +2,7 @@
 # tools/monitor_wait_state.sh <target_state> [timeout_s]
 # 轮询 /zx2026/state 直到目标相位（供 e2e 驱动与人工排障用）
 source /opt/ros/noetic/setup.bash
-source /home/ubuntu/zx2026_defop_ws/devel/setup.bash
+source /home/ubuntu/zx2026_arena_ws/devel/setup.bash
 export ROS_MASTER_URI=http://127.0.0.1:11411
 export ROS_HOSTNAME=127.0.0.1
 target=${1:-DONE}

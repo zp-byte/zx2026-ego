@@ -17,7 +17,7 @@ import sys
 import time
 from collections import Counter
 
-WS = "/home/ubuntu/zx2026_defop_ws"
+WS = "/home/ubuntu/zx2026_arena_ws"
 ROS_LOG = os.path.expanduser("~/.ros/log")
 RUN_LOGS = os.path.join(WS, "run_logs")
 

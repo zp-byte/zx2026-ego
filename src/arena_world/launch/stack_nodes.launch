@@ -4,6 +4,24 @@
        物理后端只负责：/drone_<id>/vel_cmd → /drone_<id>/odom + /tf + /clock。
   -->
 
+  <!-- ══ 云源选择（2026-10-07 深度相机改造）════════════════════════════════
+       cloud_src=depth（默认，本次目标态）：不起 lidar_node；depth_sim_node ×6
+         渲染合成前视深度图 → depth_cloud_node ×6 反投影成 /drone_<id>/cloud。
+         nav_node / mission_executor 零代码改动（桥节点复刻 lidar 的输出契约）。
+       cloud_src=lidar（对照臂）：原样 6 份 lidar_node，深度链整组不启。
+       ⚠ 本 arg 必须在**每个入口 launch** 里声明并透传 include：roslaunch 对
+         未声明的顶层 arg 是**静默忽略**（不报错、不生效），漏一处则命令行
+         `cloud_src:=lidar` 无声失效。入口 = arena_world/launch/zx2026_all.launch
+         （python 后端）与 arena_world_gazebo/launch/gazebo.launch（gzserver）。 -->
+  <arg name="cloud_src" default="depth"/>
+
+  <!-- DeFoP 推理臂开关（每机 1 套三节点：深度补洞→seVAE 编码→CPN 规划，2026-09-29 T3）。
+       自门控：缺省 false 时整组不 include，零节点/零话题/零侵入。
+       ⚠ 声明位置 2026-10-07 上移至此（原在下方 group 正上方）：下方 depth_sim 的
+       group 条件要用 arg('defop_arm')，而 roslaunch 按文档序解析，声明晚于引用
+       会报 "arg not defined"。 -->
+  <arg name="defop_arm" default="false"/>
+
   <!-- 编队就绪 -->
   <node pkg="arena_fleet" type="fleet_node.py" name="fleet_node" output="screen"/>
 
@@ -71,33 +89,42 @@
     <param name="drone_id" value="5"/>
   </node>
 
-  <!-- lidar：每机 1 份模拟点云（闭环导航消费 /drone_<id>/cloud） -->
-  <node pkg="arena_sensor" type="lidar_node.py" name="lidar_0" output="log">
-    <param name="drone_id" value="0"/>
-  </node>
-  <node pkg="arena_sensor" type="lidar_node.py" name="lidar_1" output="log">
-    <param name="drone_id" value="1"/>
-  </node>
-  <node pkg="arena_sensor" type="lidar_node.py" name="lidar_2" output="log">
-    <param name="drone_id" value="2"/>
-  </node>
-  <node pkg="arena_sensor" type="lidar_node.py" name="lidar_3" output="log">
-    <param name="drone_id" value="3"/>
-  </node>
-  <node pkg="arena_sensor" type="lidar_node.py" name="lidar_4" output="log">
-    <param name="drone_id" value="4"/>
-  </node>
-  <node pkg="arena_sensor" type="lidar_node.py" name="lidar_5" output="log">
-    <param name="drone_id" value="5"/>
-  </node>
+  <group if="$(eval arg('cloud_src') == 'lidar')">
+    <!-- lidar：每机 1 份模拟点云（闭环导航消费 /drone_<id>/cloud） -->
+    <node pkg="arena_sensor" type="lidar_node.py" name="lidar_0" output="log">
+      <param name="drone_id" value="0"/>
+    </node>
+    <node pkg="arena_sensor" type="lidar_node.py" name="lidar_1" output="log">
+      <param name="drone_id" value="1"/>
+    </node>
+    <node pkg="arena_sensor" type="lidar_node.py" name="lidar_2" output="log">
+      <param name="drone_id" value="2"/>
+    </node>
+    <node pkg="arena_sensor" type="lidar_node.py" name="lidar_3" output="log">
+      <param name="drone_id" value="3"/>
+    </node>
+    <node pkg="arena_sensor" type="lidar_node.py" name="lidar_4" output="log">
+      <param name="drone_id" value="4"/>
+    </node>
+    <node pkg="arena_sensor" type="lidar_node.py" name="lidar_5" output="log">
+      <param name="drone_id" value="5"/>
+    </node>
+  </group>
 
-  <!-- 前视深度相机（每机 1 份，D435 式合成渲染，DeFoP 导航图像源，2026-09-28 P1）。
-       【ego 路线 2026-10-05 改门控】深度源默认=Gazebo D435 插件（world_builder
-       注入，见 docs/EGO_DESIGN.md §三），真值渲染 depth_sim 整组默认不拉起；
-       WSL 渲染出不来深度图时的逃生门=roslaunch ... depth_sim:=true（回退
-       合成渲染，同话题契约 16UC1）。 -->
-  <arg name="depth_sim" default="false"/>
-  <group if="$(arg depth_sim)">
+  <group if="$(eval arg('cloud_src') == 'depth' or arg('defop_arm'))">
+    <!-- 前视深度相机（每机 1 份，D435 式合成渲染，DeFoP 导航图像源，2026-09-28 P1）。
+         自门控（新约定）：sim_settings.sensor.depth 段缺失或 enabled=false 时
+         启动即退、零发布者、INFO 一次。
+         ⚠ 2026-10-07 加 **launch 门**（原为纯 config 自门控）：深度渲染是
+         480x270 真值 raycast ×6 机，代价不小；cloud_src=lidar 对照臂若白跑
+         整条深度链，RTF 会被污染，而 RTF 是 A/B 的判据⓪。defop_arm 对深度图
+         是硬依赖，故 OR 进同一条件。
+         ⚠ 实测（roslaunch 的「只列节点不启动」解析模式）：defop_arm:=true 当前**必失败** ——
+         "Resource not found: defop_nav"，因 src/defop_nav/CATKIN_IGNORE 存在
+         （git 跟踪，出自基线 1ff2cee，ego 期遗留，非本次覆盖引入）而 rospack
+         会跳过该目录。故本 OR 是**结构性预留**而非活路：真要跑 DeFoP 臂须先
+         摘掉那个标记，届时本条件自动生效、无需再改。 -->
+
     <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_0" output="log">
       <param name="drone_id" value="0"/>
     </node>
@@ -115,6 +142,47 @@
     </node>
     <node pkg="arena_sensor" type="depth_sim_node.py" name="depth_sim_5" output="log">
       <param name="drone_id" value="5"/>
+    </node>
+  </group>
+
+  <group if="$(eval arg('cloud_src') == 'depth')">
+    <!-- 深度图 → 点云桥（2026-10-07）。把 /drone_<id>/depth/image_raw 反投影成
+         /drone_<id>/cloud，逐字段复刻 lidar_node 的输出契约（世界系 PointCloud2、
+         x/y/z FLOAT32、point_step=12、height=1、is_dense=true、queue_size=4；
+         发布率 = fps/decim = 7.5/1 = 7.5Hz，见该节点 docstring），
+         使 nav_node 与 mission_executor **一行不改**。
+         正确性要点见 depth_cloud_node.py 模块 docstring：哨兵雷（无命中像素
+         是 max_range 毫米哨兵，不是 0，两个都须丢）、yaw-only 外参、均匀行列
+         抽样降采样。
+         注意本组**同时**是 lidar 组的替代：两者都写 /drone_<id>/cloud，
+         cloud_src 保证互斥，绝不并发。
+         ⚠ decim 与 sim_settings.sensor.depth.fps 是一对：2026-10-07 RTF 治理把
+         (fps=15, decim=2) 改成 (fps=7.5, decim=1) —— **发布率不变（7.5Hz），
+         渲染成本减半**。改任一个必须同步另一个，否则发布率会漂。
+         依据 docs/depth_chain_case.md §4.6。 -->
+    <node pkg="arena_sensor" type="depth_cloud_node.py" name="depth_cloud_0" output="log">
+      <param name="drone_id" value="0"/>
+      <param name="decim" value="1"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_cloud_node.py" name="depth_cloud_1" output="log">
+      <param name="drone_id" value="1"/>
+      <param name="decim" value="1"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_cloud_node.py" name="depth_cloud_2" output="log">
+      <param name="drone_id" value="2"/>
+      <param name="decim" value="1"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_cloud_node.py" name="depth_cloud_3" output="log">
+      <param name="drone_id" value="3"/>
+      <param name="decim" value="1"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_cloud_node.py" name="depth_cloud_4" output="log">
+      <param name="drone_id" value="4"/>
+      <param name="decim" value="1"/>
+    </node>
+    <node pkg="arena_sensor" type="depth_cloud_node.py" name="depth_cloud_5" output="log">
+      <param name="drone_id" value="5"/>
+      <param name="decim" value="1"/>
     </node>
   </group>
 
@@ -139,9 +207,8 @@
   </node>
 
   <!-- DeFoP 推理臂（每机 1 套三节点：深度补洞→seVAE 编码→CPN 规划，2026-09-29 T3）。
-       自门控（新约定）：defop_arm 缺省 false（默认）时整组不 include——零节点、
-       零话题、零侵入基线；联调/真机时 roslaunch ... defop_arm:=true 手动开。 -->
-  <arg name="defop_arm" default="false"/>
+       arg 声明已于 2026-10-07 上移至文件头（须早于上方 depth_sim 的 group 引用），
+       此处只留 include 组。联调/真机：roslaunch ... defop_arm:=true。 -->
   <group if="$(arg defop_arm)">
     <include file="$(find defop_nav)/launch/defop.launch">
       <arg name="drone_id" value="0"/>
@@ -160,107 +227,6 @@
     </include>
     <include file="$(find defop_nav)/launch/defop.launch">
       <arg name="drone_id" value="5"/>
-    </include>
-  </group>
-
-  <!-- ego 臂（每机 1 套：ego_planner + traj_server + ego_bridge，2026-10-05
-       ego 路线）。本工作区默认开（ego 专用 ws）；联锁=sim_settings
-       planner.source: ego + pen_authority: cpn_forever（同帧装订，缺键后果=
-       ego 臂静默失效跑成 internal 基线）。defop 臂并存可用（互斥由
-       planner.source 单写者仲裁保证）。 -->
-  <arg name="ego_arm" default="true"/>
-  <!-- ego 臂 A/B 注入点（2026-10-06 碰撞治理案 E0/E1/E2）：max_vel 与 grid_map
-       obstacles_inflation 从 gazebo.launch 一路穿到 advanced_param_zx.xml。
-       缺省值=run5 基线口径（2.0/0.099），不传即复现基线。 -->
-  <arg name="max_vel" default="2.0"/>
-  <arg name="inflation" default="0.099"/>
-  <!-- 感知修正臂注入点（2026-10-06 碰撞治理案 P1/P2/P3）：
-       ground_filter = 地面滤阈值(m，0=关=母本行为)
-       ray_length   = 感知视距(m，母本 4.5) -->
-  <arg name="ground_filter" default="0.0"/>
-  <arg name="ray_length" default="4.5"/>
-  <!-- depth_mindist = 深度近距截断(m)。母本 0.2 会把本机型自己的桨叶（0.30-0.40 m
-       自格）当障碍画进图 ⇒ 膨胀≥0.3 时吞掉机心致规划器拒停。默认 0.45 = 修复值；
-       传 0.2 复现旧行为（A/B 用）。详见 docs/ego_blind_flight_case.md §九。 -->
-  <arg name="depth_mindist" default="0.45"/>
-  <!-- p_hit = 栅格图命中似然（母本 0.65）。确认时延旋钮：每格每帧只加一次 log-odds
-       （grid_map.cpp:491），logit(0.65)=0.619，p_min→p_occ 需 6 帧；深度实测
-       1.7-3.3 Hz ⇒ 2-3 s 才认障碍。0.90 ⇒ 2 帧。默认 0.65 = 零行为变更。 -->
-  <arg name="p_hit" default="0.65"/>
-  <!-- global_route = 全局路由器臂（2026-10-06）：在 ego 前串一个 A* 路由器，
-       把 mission 的单点 goal 展开成绕障航点序列。默认关 = 逐字节旧行为。
-       占用源与调参在 sim_settings.yaml planner.global_route。
-       goal 入口的切换用**每个 include 点上的 arg-if**（已实测支持：if 不成立时
-       该 arg 整个不出现，子 launch 取自己的字面缺省）。刻意**不用 $(eval)**：条件式
-       eval 在 roslaunch 里不随 CLI 覆盖切换（探针实测 global_route:=true 仍解析出
-       /planning/goal），真 launch 同样失灵 ⇒ 六机拿不到 goal ⇒ 全冻。 -->
-  <arg name="global_route" default="false"/>
-  <group if="$(arg ego_arm)">
-    <include file="$(find ego_zx)/launch/ego.launch">
-      <arg name="drone_id" value="0"/>
-      <arg name="max_vel" value="$(arg max_vel)"/>
-      <arg name="inflation" value="$(arg inflation)"/>
-      <arg name="ground_filter" value="$(arg ground_filter)"/>
-      <arg name="ray_length" value="$(arg ray_length)"/>
-      <arg name="depth_mindist" value="$(arg depth_mindist)"/>
-      <arg name="p_hit" value="$(arg p_hit)"/>
-      <arg name="global_route" value="$(arg global_route)"/>
-      <arg if="$(arg global_route)" name="goal_topic" value="/drone_0/planning/route_goal"/>
-    </include>
-    <include file="$(find ego_zx)/launch/ego.launch">
-      <arg name="drone_id" value="1"/>
-      <arg name="max_vel" value="$(arg max_vel)"/>
-      <arg name="inflation" value="$(arg inflation)"/>
-      <arg name="ground_filter" value="$(arg ground_filter)"/>
-      <arg name="ray_length" value="$(arg ray_length)"/>
-      <arg name="depth_mindist" value="$(arg depth_mindist)"/>
-      <arg name="p_hit" value="$(arg p_hit)"/>
-      <arg name="global_route" value="$(arg global_route)"/>
-      <arg if="$(arg global_route)" name="goal_topic" value="/drone_1/planning/route_goal"/>
-    </include>
-    <include file="$(find ego_zx)/launch/ego.launch">
-      <arg name="drone_id" value="2"/>
-      <arg name="max_vel" value="$(arg max_vel)"/>
-      <arg name="inflation" value="$(arg inflation)"/>
-      <arg name="ground_filter" value="$(arg ground_filter)"/>
-      <arg name="ray_length" value="$(arg ray_length)"/>
-      <arg name="depth_mindist" value="$(arg depth_mindist)"/>
-      <arg name="p_hit" value="$(arg p_hit)"/>
-      <arg name="global_route" value="$(arg global_route)"/>
-      <arg if="$(arg global_route)" name="goal_topic" value="/drone_2/planning/route_goal"/>
-    </include>
-    <include file="$(find ego_zx)/launch/ego.launch">
-      <arg name="drone_id" value="3"/>
-      <arg name="max_vel" value="$(arg max_vel)"/>
-      <arg name="inflation" value="$(arg inflation)"/>
-      <arg name="ground_filter" value="$(arg ground_filter)"/>
-      <arg name="ray_length" value="$(arg ray_length)"/>
-      <arg name="depth_mindist" value="$(arg depth_mindist)"/>
-      <arg name="p_hit" value="$(arg p_hit)"/>
-      <arg name="global_route" value="$(arg global_route)"/>
-      <arg if="$(arg global_route)" name="goal_topic" value="/drone_3/planning/route_goal"/>
-    </include>
-    <include file="$(find ego_zx)/launch/ego.launch">
-      <arg name="drone_id" value="4"/>
-      <arg name="max_vel" value="$(arg max_vel)"/>
-      <arg name="inflation" value="$(arg inflation)"/>
-      <arg name="ground_filter" value="$(arg ground_filter)"/>
-      <arg name="ray_length" value="$(arg ray_length)"/>
-      <arg name="depth_mindist" value="$(arg depth_mindist)"/>
-      <arg name="p_hit" value="$(arg p_hit)"/>
-      <arg name="global_route" value="$(arg global_route)"/>
-      <arg if="$(arg global_route)" name="goal_topic" value="/drone_4/planning/route_goal"/>
-    </include>
-    <include file="$(find ego_zx)/launch/ego.launch">
-      <arg name="drone_id" value="5"/>
-      <arg name="max_vel" value="$(arg max_vel)"/>
-      <arg name="inflation" value="$(arg inflation)"/>
-      <arg name="ground_filter" value="$(arg ground_filter)"/>
-      <arg name="ray_length" value="$(arg ray_length)"/>
-      <arg name="depth_mindist" value="$(arg depth_mindist)"/>
-      <arg name="p_hit" value="$(arg p_hit)"/>
-      <arg name="global_route" value="$(arg global_route)"/>
-      <arg if="$(arg global_route)" name="goal_topic" value="/drone_5/planning/route_goal"/>
     </include>
   </group>
 

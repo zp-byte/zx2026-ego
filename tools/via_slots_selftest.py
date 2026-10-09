@@ -4,7 +4,7 @@
 
 真实森林 density_seed=42 固定（scene_topology.yaml，不随 run_seed 变）→
 槽位集合全局确定，验证一次即代表全部 A/B seed。
-运行: source /opt/ros/noetic/setup.bash && source ~/zx2026_defop_ws/devel/setup.bash \
+运行: source /opt/ros/noetic/setup.bash && source ~/zx2026_arena_ws/devel/setup.bash \
       && python3 tools/via_slots_selftest.py
 """
 import copy
@@ -12,7 +12,7 @@ import math
 import os
 import sys
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 sys.path.insert(0, os.path.join(WS, "src/arena_mission/scripts"))
 
 from zx2026_common import config as cfg

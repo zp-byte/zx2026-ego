@@ -2,7 +2,7 @@
 # FR-4.x E2E：hub(空管) + mavlink bridge + 两台假 PX4 全链路
 # 预期：PROX_WARN/CRIT(对飞) + land 闭环 + mission 上传闭环
 set -u
-cd /home/ubuntu/zx2026_defop_ws/tools/gcs || exit 1
+cd /home/ubuntu/zx2026_arena_ws/tools/gcs || exit 1
 OUT=/mnt/c/Users/24882/Desktop/_gcs_mavlink_e2e.txt
 : > "$OUT"
 

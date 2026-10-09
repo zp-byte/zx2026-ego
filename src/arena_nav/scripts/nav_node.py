@@ -83,7 +83,8 @@ def vo_deflect(px, py, pz, vx, vy, drone_id, nj, nv,
 
 
 def bh_evidence_tier(occ_ev, rebuild_n, window_cycles, t_near, t_far,
-                     trust_r, dense_factor, nx, ny, g_to_world, est_pos):
+                     trust_r, dense_factor, nx, ny, g_to_world, est_pos,
+                     rigid=None):
     """O1/O4 证据积分决策（纯函数，tools/bh_selftest.py 离线验证）。
 
     真机树枝避障的判占核心：窗口内观测计数替代"一点即占"。
@@ -96,14 +97,27 @@ def bh_evidence_tier(occ_ev, rebuild_n, window_cycles, t_near, t_far,
     森林内部 A* 不可穿 → 北绕界外 OOB 退赛 + 西入口墙滑扫（B 臂 0/3 PASS；
     逐机制切除 O3/O4/O5 均 retired=5 不解 → 根因在判占线本身）。移到密度线
     后细枝停留 UNC 走 O4 减速——"细枝不判死只减速"的设计本意。
+    rigid（甲-C 2026-10-08）：刚性格集合——证据量曾跨过 rigid_min_pts 的格。
+    这类格**不受 window_cycles 遗忘**，且恒定判占（不降级为 unc）。理由：1.5s
+    窗的设计对象是"风摆的枝摆走即忘"，但同一窗也把**树干**忘了——而树干是永久
+    障碍。实测（基线#18）占用格只有 1.5s 记忆 ⇒ 无人机 1.5m/s 时地图有效深度
+    ≈2.25m，A* 短视；航路方向逐秒翻符号率 43%、P90 摆幅 80-138°。离线复算：
+    同一份 _grid_astar，空栅格给净距 -0.05m（擦树干），喂满真值给 +1.10m。
+    rigid=None ⇒ 逐位原行为（配置 rigid_min_pts: 0 即关）。
+    细枝回波（每帧 1-2 点）永远到不了刚性线 ⇒ 旧"永久格⇒细枝闭合走廊⇒北绕
+    界外 OOB"病灶（20260912 矩阵）不复现。
     返回 (occ, unc) 两组 (ix,iy) 集合。
     """
     for c in [c for c, ev in occ_ev.items()
-              if rebuild_n - ev[1] > window_cycles]:
+              if rebuild_n - ev[1] > window_cycles
+              and (rigid is None or c not in rigid)]:
         del occ_ev[c]
     occ, unc = set(), set()
     for (ix, iy), (cnt, _lc) in occ_ev.items():
         if not (0 <= ix < nx and 0 <= iy < ny):
+            continue
+        if rigid is not None and (ix, iy) in rigid:
+            occ.add((ix, iy))       # 刚性格：证据量已达树干级，不降级、不遗忘
             continue
         gx, gy = g_to_world(ix, iy)
         d_est = math.hypot(gx - est_pos[0], gy - est_pos[1])
@@ -168,42 +182,185 @@ def vel_source_of(settings):
     """planner.source 解析（纯函数，tools/defop_shadow_selftest.py 离线复用）。
 
     T2 shadow 模式配置门：返回 'defop' = defop_cpn 接管 /drone_<id>/vel_cmd
-    发布（nav_node 全管线照跑只掐发布，见 _tick 落点注释）；'ego' = ego 臂
-    同契约接管（ego_bridge 发 /planning/cpn_vel_raw，本节点中继——ego 当笔，
-    docs/EGO_DESIGN.md）；其余一律 'internal'（现状）。保守回退三连：键
-    缺失 / planner 段为 null / 值不识——只放行 'defop'/'ego' 两个外来值，
-    yaml `planner:` 空段（None）也安全。
+    发布（nav_node 全管线照跑只掐发布，见 _tick 落点注释）；其余一律
+    'internal'（现状）。保守回退三连：键缺失 / planner 段为 null / 值不识
+    ——只放行 'defop' 一个外来值，yaml `planner:` 空段（None）也安全。
     """
     sec = settings.get("planner", {}) or {}
     if not isinstance(sec, dict):  # verify minor：段为标量/列表不崩，回退
         return "internal"
     src = str(sec.get("source", "internal"))
-    return src if src in ("defop", "ego") else "internal"
+    return "defop" if src == "defop" else "internal"
 
 
-def pen_mode_of(settings):
-    """planner.pen_authority 解析（纯函数，tools/defop_pen_selftest.py 离线
-    复用）。'cpn_forever' = CPN 全程持笔（pen_authority_case 刀一：executor
-    起飞暖机闸门 + departure 门旁路 + stall 冻结看门狗，三捆绑）；缺省/不识/
-    段异常一律 'nav' = 逐字节旧行为。仅在 vel_source_of=='defop' 时有意义。"""
-    sec = settings.get("planner", {}) or {}
-    if not isinstance(sec, dict):  # 与 vel_source_of 同款保守回退
-        return "nav"
-    return ("cpn_forever"
-            if str(sec.get("pen_authority", "nav")) == "cpn_forever" else "nav")
-
-
-def cpn_active_of(defop, terminal_engaged, departure_clear, has_goal,
-                  forever=False):
+def cpn_active_of(defop, terminal_engaged, departure_clear, has_goal):
     """P3 终端交接闸门（纯函数）：cpn 只在 cruise 窗口持有 vel_cmd。
     cruise = defop 模式 且 有腿目标 且 出发场清空 且 未进入终端接近。
-    任一条件不满足 -> nav 持有（含 internal 模式恒 False=行为不变）。
-    forever=True（pen_authority=cpn_forever）：出发场门旁路——CPN 全程持笔，
-    出生排间距不再拖笔，机间分离交 Boids sep 仲裁守卫（杀线盯 drone-drone
-    新形）；has_goal 与 terminal 终端交接保持不动。"""
-    if forever:
-        return bool(defop and has_goal and not terminal_engaged)
+    任一条件不满足 -> nav 持有（含 internal 模式恒 False=行为不变）。"""
     return bool(defop and has_goal and departure_clear and not terminal_engaged)
+
+
+def wrap_pi(a):
+    """角度归一化到 [-pi, pi]（纯函数）。
+
+    自含实现：zx2026_common 无角度工具，不引 defop 包（defop_nav 在本仓
+    CATKIN_IGNORE，跨包 import 会把 nav_node 一起拖死）。±pi 两端点等价，
+    取值差异对判据无影响。
+    """
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+def heading_mode_of(settings):
+    """heading_align.mode 解析（纯函数，tools/heading_selftest.py 离线复用）。
+
+    保守回退三连（与 vel_source_of 同款）：键缺失 / 段为 null 或非 dict /
+    值不识 —— 一律 'off'（= 逐字节现状）。只放行 'track' / 'strict' 两个
+    外来值：track = 只转不门控（对照臂），strict = 全程严格对齐（门控）。
+    """
+    sec = settings.get("heading_align", {}) or {}
+    if not isinstance(sec, dict):
+        return "off"
+    mode = str(sec.get("mode", "off")).strip().lower()
+    return mode if mode in ("track", "strict") else "off"
+
+
+def heading_gate(yaw, aim_x, aim_y, path_x, path_y, vz, engaged, target,
+                 t0, now, mode, rate_max, gain, enter, exit_, vh_min,
+                 strict_scale, max_align_s, rearm=None):
+    """机头对齐闸门（纯函数，无 ROS 依赖；tools/heading_selftest.py 离线复用）。
+
+    病灶：/drone_<id>/vel_cmd 的 `angular.z` 契约是**偏航速率**，而本节点是
+    唯一写者却从不赋值 ⇒ yaw 恒等于 reset 时的 0.0（正东）。深度臂导航云源
+    是前视相机（depth_sim 按 odom_yaw 渲染）⇒ 感知只剩一个东向楔形。本闸门
+    就是补上那个缺失的写者（docs/depth_chain_case.md §4.9）。
+
+    【2026-10-08 aim/path 解耦（c15028c4 六起盲撞定谳）】瞄准与缩放分家：
+      · aim = 最终去向（含反应层增量的 cmd）——「相机应对准将要去的方向」。
+        10-07 夜改曾把瞄准也换成航路分量，实弹后果：门控期间航路被乘
+        strict_scale=0.15 后不再等于去向（撞拍 vh 0.59-0.98 >> 0.15×2.0
+        =0.30 的上限即证），去向由分离/云避障等增量决定、机头却仍追航路
+        ⇒ |crab| 50% 样本 >43.5°（半视场）、33% >90°，六起全盲撞
+        （clr 2.33-5.82m vs dr 0.35m：撞拍反应层点云里根本没有那棵树）。
+      · path = 航路分量——唯一被 strict_scale 缩放的量。反应层增量不缩：
+        d3/d5 机间互撞定谳（2026-10-07 夜 strict 局）分离逃逸推恰在门控
+        咬合时被连乘 0.15 ⇒ 最后一道防线被关掉。两案由本解耦同时治。
+
+    参数
+      yaw     本机当前偏航角（rad，世界系 ENU，odom 姿态真值）
+      aim_x/y 瞄准向量（最终 cmd；调用点以 heading_align.aim 可切 path 作对照臂）
+      path_x/y 航路分量（唯一被 strict_scale 缩放的量）
+      vz      垂直命令（占位——本函数不动垂直分量）
+      engaged/target/t0  滞回状态机的上一拍状态（target 为锁存目标航向）
+      mode    'off' | 'track' | 'strict'
+      enter/exit_  门控进入/退出阈值（rad）；enter > exit 防抖
+      vh_min  瞄准向量水平模下限（m/s)：低于此值不转也不门控（悬停/纯垂直。
+              判据在 aim 不在 path——「航路≈0 但增量在漂」正是必须看向的盲漂）
+      strict_scale  门控期间航路分量缩放（**不取 0**：本仓「scale→0 磨树
+                    40:0」定谳 + veto 0.35 地板相乘 ≈ 0.05 复现该病理）
+      max_align_s  门控最长时长（防楔死兜底：超时无条件释放）
+      rearm   重锁阈值（rad）；None ⇒ 回退 enter（= 解耦前行为，逐位兼容）
+
+    返回 (yaw_rate, path_x_out, path_y_out, engaged_next, target_next,
+          t0_next, gated)；path_out 交 heading_compose 叠回反应层增量。
+
+    锁存与重锁（re-arm）：进门时 target=psi_d；门控中若瞄准方向偏离锁存
+    目标超过 rearm 则重锁。纯锁存会追陈旧目标最长 max_align_s——c15028c4
+    撞拍有 err=+154.8° 且 rate 顶满的「追 180° 外旧目标」形态，故 10-08
+    加了重锁。
+
+    【2026-10-08 局#17 定谳：重锁阈值必须与 enter 解耦】原实现 rearm≡enter
+    =35°：自激环里瞄准方向每秒动 35°+ ⇒ 每秒重锁一次 ⇒ 机头永远追不上
+    （实测门控期间 crab 中位 53-80°、|Δaim| 中位 86.6°/s **= 转速上限本身**、
+    4/4 撞击发生在门控态且 rate 顶格）。解耦后进门仍 enter(35°)，但重锁
+    只在真换路（>90°）时发生 —— 既保住「180° 反转换路」的重锁保护，又
+    让 35-90° 的环内抖动无法持续喂养重锁。原「锁存切断反馈环」的顾虑
+    （障碍转出视野→推力归零→航向回摆的 1-2Hz 极限环）由 enter/exit 滞回
+    + gain/速率限幅 + max_align_s 兜底吸收。
+
+    ⚠ 救援态（死端逃逸 _de_active / 目标封锁 _gs_active）调用点传 'track'：
+    逃逸是恢复不是飞行路线，门控会把「一直在转圈」变成「一直在转圈且不动」。
+    """
+    if rearm is None:
+        rearm = enter          # 缺省=解耦前行为（与 enter 共用），逐位兼容
+    if mode == "off":
+        return 0.0, path_x, path_y, False, None, t0, False
+    if math.hypot(aim_x, aim_y) < vh_min:
+        return 0.0, path_x, path_y, False, None, t0, False
+    psi_d = math.atan2(aim_y, aim_x)
+    if mode != "strict":
+        # track 对照臂：只跟踪（engaged 恒 False ⇒ 门控状态不残留）
+        return (float(np.clip(gain * wrap_pi(psi_d - yaw), -rate_max, rate_max)),
+                path_x, path_y, False, None, t0, False)
+    if not engaged:
+        err = wrap_pi(psi_d - yaw)
+        if abs(err) <= enter:
+            return (float(np.clip(gain * err, -rate_max, rate_max)),
+                    path_x, path_y, False, None, t0, False)
+        # 进门：本拍即压航路分量（用户裁决「先压平移、转到位、再走」——压的
+        # 是航路；反应层增量保持全强度，见 docstring 解耦节）
+        return (float(np.clip(gain * err, -rate_max, rate_max)),
+                path_x * strict_scale, path_y * strict_scale, True, psi_d,
+                now, True)
+    # 已门控：锁存目标陈旧（瞄准方向偏离超 rearm）即重锁，不追旧目标。
+    # rearm 与 enter 解耦见 docstring【局#17 定谳】——rearm≡enter 时自激环
+    # 每秒喂一次重锁，机头永远追不上（crab 中位 53-80°）。
+    if target is None or abs(wrap_pi(psi_d - target)) > rearm:
+        target = psi_d
+    err = wrap_pi(target - yaw)
+    if abs(err) < exit_ or (now - t0) > max_align_s:
+        # 到位 / 超时兜底：本拍即恢复全速（超时释放是防楔死的最后一道）
+        return (float(np.clip(gain * err, -rate_max, rate_max)),
+                path_x, path_y, False, None, t0, False)
+    return (float(np.clip(gain * err, -rate_max, rate_max)),
+            path_x * strict_scale, path_y * strict_scale, True, target, t0, True)
+
+
+def heading_compose(gated_xy, path_xy, cmd):
+    """把门控结果叠回最终指令：**只缩放航路分量**，反应层增量原样保留。
+
+    d3/d5 机间互撞法证（2026-10-07 夜 strict 局）：分离层的逃逸推在撞前
+    ~0.35s 把两机各自的水平指令各翻了约 180°（探针里 `wr` 突跳并顶在限幅、
+    航向朝新目标一路转），门控**恰在此刻咬合**，被乘 strict_scale=0.15 的
+    `cmd[0]/cmd[1]` 此时主要是逃逸推 —— 等于在最后一刻把最后一层防线关掉。
+    故门控只作用于**航路分量**（`_closed_loop_cmd`/`_god_mode_cmd` 的输出），
+    `_ha_px/_ha_py` 快照之后的增量（集群/分离/VO/云避障/场景避障/风/否决/
+    限速）全强度保留。叠回后可能重新越过 `max_vel`，由调用点的末闸兜底。
+    """
+    return (gated_xy[0] + (float(cmd[0]) - path_xy[0]),
+            gated_xy[1] + (float(cmd[1]) - path_xy[1]))
+
+
+def contact_point_of(ex, ey, clr_now, clr_u, vx, vy, block_r, blind_v, dr):
+    """碰撞当拍推断"刚撞上的障碍点"（起 2），返回 ((x, y), why) 或 (None, "")。
+
+    两路，优先级自上而下：
+      ① **点云确认**：最近点云距 `clr_now ≤ block_r` ⇒ 障碍就在法向 `clr_u`
+         指的方位；接触点 = est + clr_u*clr_now（因 clr_now 就是同一个 best_d，
+         该式与那个点云的 (x,y) **逐位相等**）。
+      ② **盲撞回退**（2026-10-08 单局定谳后追加）：点云没看见它
+         （`clr_now > block_r`，或压根无点云 clr_u=None）。此时①无解，但机是
+         **撞进去**的 ⇒ 障碍在**行进方向**上；取水平速度方向，接触点落在
+         est + dr·v̂（dr 处即机面）。要求水平速度 ≥ `blind_v`——速度太小方向
+         无意义（低速贴树挤入形态），`blind_v ≤ 0` 即关掉本路。
+
+    动因（drone5 起 2 序列，见 docs）：撞#1 `clr=2.38`（盲撞）→ 11.4s 后
+    撞#2 `clr=0.32`（同格再撞）。撞#1 走的是①的**反面**（点云最近点在 2.38m
+    外，根本不是撞上的那棵树）⇒ 旧实现零记录 ⇒ 逃逸不受约束 ⇒ 直奔 goal
+    再撞。本函数的②路正是补这个洞。**②是先验不是观测**：它假设"撞上的一定
+    在行进方向"，估位姿侧滑入树时该假设会偏——故默认关门、可 A/B。
+
+    纯函数（无 self、无 IO），单测见 tools/de_selftest.py S12-L6。
+    """
+    if block_r <= 0.0:
+        return None, ""
+    if clr_u is not None and clr_now <= block_r:
+        return (ex + clr_u[0] * clr_now, ey + clr_u[1] * clr_now), "cloud"
+    if blind_v <= 0.0:
+        return None, ""
+    sp = math.hypot(vx, vy)
+    if sp < blind_v:
+        return None, ""
+    return (ex + dr * vx / sp, ey + dr * vy / sp), "blind"
 
 
 class NavNode:
@@ -236,14 +393,47 @@ class NavNode:
         # 解析规则见 vel_source_of。
         self._vel_source = vel_source_of(settings)
 
+        # ---- 机头对齐（heading_align；2026-10-07 立案，案卷 docs/depth_chain_case.md §4.9）
+        # 病灶：vel_cmd 的 angular.z 是**偏航速率**，本节点是唯一写者却从不赋值
+        # ⇒ yaw 恒 = reset 的 0.0（正东）；深度臂云源=前视相机按 odom_yaw 渲染
+        # ⇒ 导航感知只剩东向 87°×58° 楔形（雷达臂 360° 方位扫描对 yaw 免疫）。
+        # 默认 mode=off ⇒ 逐字节零行为变更，行为全由 A/B 切换。解析见
+        # heading_mode_of，闸门数学见 heading_gate（两者均模块级纯函数）。
+        ha = settings.get("heading_align", {}) or {}
+        if not isinstance(ha, dict):   # verify minor：段为标量/列表不崩
+            ha = {}
+        self._ha_mode = heading_mode_of(settings)
+        self._ha_rate_max = float(ha.get("yaw_rate_max", 1.5))
+        self._ha_gain = float(ha.get("gain", 2.5))
+        self._ha_enter = math.radians(float(ha.get("enter_deg", 20.0)))
+        self._ha_exit = math.radians(float(ha.get("exit_deg", 8.0)))
+        self._ha_vh_min = float(ha.get("vh_min", 0.15))
+        self._ha_scale = float(ha.get("strict_scale", 0.15))
+        self._ha_max_s = float(ha.get("max_align_s", 4.0))
+        # 重锁阈值（2026-10-08 局#17 定谳后与 enter 解耦）：瞄准方向偏离锁存
+        # 目标超过此值才重锁。缺键回退 enter ⇒ 解耦前行为逐位一致（零行为
+        # 变更，其他臂/旧配置不受影响）。
+        _ha_rearm = ha.get("rearm_deg", None)
+        self._ha_rearm = (math.radians(float(_ha_rearm))
+                          if _ha_rearm is not None else self._ha_enter)
+        # 瞄准源（2026-10-08 修复）：final=最终去向 cmd；path=10-07 夜行为（对照
+        # 臂，c15028c4 六起盲撞形态）。值不识回退 final——与 heading_mode_of 的
+        # 保守回退不同向：这里回退错=复现盲撞，宁可取修复值。
+        self._ha_aim = str(ha.get("aim", "final")).strip().lower() or "final"
+        if self._ha_aim not in ("final", "path"):
+            self._ha_aim = "final"
+        self.odom_yaw = 0.0          # _on_odom 姿态回填（深度/雷达同式）
+        self._ha_engaged = False
+        self._ha_target = None       # 进门时锁存的去向航向（切断反馈环）
+        self._ha_t0 = 0.0
+        self._ha_align_s = 0.0       # 被门控累计秒数（纯观测，单调）
+        self._ha_last_t = None
+
         # ---- 闭环配置 ----
         cl = settings.get("closed_loop", {})
         self.closed_loop = bool(cl.get("enabled", False))
         self.drift_rate = float(cl.get("drift_rate", 0.02))
         self.drift_max = float(cl.get("drift_max", 0.3))
-        # 贴地 vz 地板二次兜底（2026-09-30）：见 _apply_z_floor_post。
-        # 默认关 = 逐字节旧行为；A/B 预设 tools/defop_zfloor_preset.py
-        self._z_floor_post = bool(cl.get("z_floor_post", False))
         # ---- 到位停拉圈按高度特化（P0-1 释放 offset 骑线，run13/14 法证） ----
         # 停拉圈 0.4 内均匀随机停点 + 漂移 = 释放 offset 0.26-0.58 分布的真身；
         # goal z 低于 low_z_max（drop 悬停 0.8 / touchdown 0.12 等精确任务段）
@@ -346,6 +536,23 @@ class NavNode:
         self._gs_max_s = float(de.get("goal_max_s", 10.0))
         self._de_cloud_r = float(de.get("cloud_clear_r", 1.0))
         self._de_exit_hyst = float(de.get("exit_hyst_s", 2.5))
+        # ---- 起 2（2026-10-08 法证）：撞后逃逸把机推回同一棵树 --------------
+        # 机制：撞点栅格标记盖的是 est_pos 周围的对称接触壳（_on_collision），
+        # 逃逸射线在每个方向都要穿同样厚度的壳 ⇒ reach 各向同性 ⇒ score 退化
+        # 为 goal_bias·cos(θ,goal) ⇒ 逃逸径直朝 goal，而真树（~0.35m，在壳内部）
+        # 对射线不可见。实测 d5 同格 11.4s 后再撞（接触壳 ttl 12s 内）。
+        # 本键把"刚撞上的那个障碍点"（本机位置 + 接触法向×最近点云距离）记进
+        # 淘汰表，逃逸射线过其走廊的方向直接否决——与既有 cloud_clear_r 走廊
+        # 检查同构，但点源是"已确认撞上的障碍"而非点云，故起点云看漏（盲撞）时
+        # 依然有效。0=关（默认，逐位原行为）；1.0=只信任点云确认在 1m 内的接触。
+        self._de_cblock_r = float(de.get("contact_block_r", 0.0))
+        self._de_cblock_ttl = float(de.get("contact_ttl_s", 12.0))
+        # 盲撞回退（2026-10-08 单局定谳后追加）：点云没看见障碍时（clr ≫ dr），
+        # 按**行进方向**记接触——机是撞进去的，障碍必然在速度方向一侧。
+        # 最小水平速度 (m/s)：低于此值方向无意义（低速贴树挤入形态）；0=关本路。
+        self._de_cblock_v = float(de.get("contact_blind_v", 0.0))
+        self._de_contacts = []     # [(x, y, t)] 撞点（障碍侧），TTL 内参与淘汰
+        self._de_cblock_n = 0      # 遥测：本次选向被撞点淘汰掉的方向数
         self._gs_active = False    # 目标封锁直达进行中
         self._gs_stall_t0 = None
         self._gs_total_t0 = -1e9
@@ -417,6 +624,12 @@ class NavNode:
         self._bh_ev_t_near = float(ev_bh.get("thresh_near", 2))
         self._bh_ev_t_far = float(ev_bh.get("thresh_far", 4))
         self._bh_ev_trust_r = float(ev_bh.get("trust_r", 5.0))
+        # 刚性格锁存线（rigid_min_pts，甲-C 2026-10-08）：累计点数跨过该值的格
+        # 永久封格（不再被 window_s 遗忘）。0=关（逐位原行为）。取值依据：
+        # 判占线 = sway_dense_factor×T = 3×2(近)/3×4(远) = 6/12 点；细枝每帧
+        # 1-2 点（×cloud_mem_frames 6 帧 = 6-12）；树干在 3m 处单帧即数百点
+        # 同格（480×270 深度云）。36 点远在细枝回波之上、远在树干之下。
+        self._bh_rigid_pts = float(ev_bh.get("rigid_min_pts", 0))
         unc_bh = bh.get("uncertain", {}) or {}
         self._bh_unc_enabled = bool(unc_bh.get("enabled", True))
         self._bh_unc_vmax = float(unc_bh.get("v_max", 0.6))
@@ -515,6 +728,9 @@ class NavNode:
             self._gpath_t = -1e9
             # ---- 真机树枝避障（O1-O5）状态：默认全关时零占用零行为 ----
             self._occ_ev = {}         # O1 证据格: (ix,iy) -> [cnt, last_cycle]
+            # 刚性格集合（甲-C 2026-10-08）：证据量曾跨过 rigid_min_pts 的格，
+            # 永不被窗口遗忘——树干是永久障碍，不该与"风摆的枝"共用 1.5s 窗。
+            self._occ_rigid = set()
             self._gocc_unc = None     # O4 不确定格（有观测但未达判占阈值的格）
             # Wave B ① 接触域标记: (ix,iy) -> 标记时重建周期（ttl 到期遗忘）。
             # 与 _collision_obs（只标机体单胞、永久）互补：接触域盖住碰撞点
@@ -638,14 +854,6 @@ class NavNode:
         self._term_goal_id = None      # 进入终端时锁定的 goal 身份（tuple(self.goal)）
         self._cpn_active = False       # False=nav 持有（internal 模式恒 False）
         self._term_reason = "init"
-        # 族④ cpn_ready 握手（2026-10-02 碰撞法证）：cpn 首次拿笔后、首拍规划
-        # 前有 3.6~4.3s 指令真空（TF 首推理暖机，六机同签名；d1 曾在持笔后
-        # 0.69s 撞干=当局第一撞）。握手=cpn 首次真实发布指令后 latched 上报
-        # /planning/cpn_ready；nav 收到前不交笔（本拍 cmd 照发）——暖机期 nav
-        # 照飞，无真空。ready 只门"nav 是否继续发布"，**不改 cpn_active 旗**
-        # （旗必须先 True 否则 cpn 永不首规划=死锁）；旗不新鲜/进程死亡不受
-        # 此键影响（活性门仍在 cpn 端）。回滚=git checkout 本文件即可。
-        self._cpn_ready = False        # 首拍未出=nav 继续持笔（旧行为=首拍真空，本键堵住）
         # 出发场清空判据半径：boids 分离半径 nav.separation_radius（默认 1.5，
         # swarm 段无独立 sep 键）与出生排 pads 间距 1.5m 同值——闸门判据
         # min_dist > r 会骑线（1.5>1.5 恒 False），按设计 fallback 取 2.0m
@@ -656,31 +864,6 @@ class NavNode:
         # （出生排盲交接=要修的缺陷），首目标后 5s 放行（真机单机不受困）。
         self._dep_clear = False
         self._goal_first_t = None
-        # pen_authority_case 刀一（2026-10-04）：持笔权主键。nav=逐字节旧；
-        # cpn_forever=三捆绑（起飞闸门在 executor 侧 / departure 旁路在
-        # _cpn_gate / stall 冻结在发布门）。internal 模式 _pen_forever 恒 False。
-        self._pen_forever = (self._vel_source in ("defop", "ego")
-                             and pen_mode_of(settings) == "cpn_forever")
-        # pen 档启动回声（审查 wf_ba224dac major：CPN 侧有 pen_relay 行而
-        # nav 无对质行——两节点解析口径可在 rosout 直接对质）。
-        rospy.loginfo("nav_node: drone %d pen_authority=%s _pen_forever=%s "
-                      "vel_src=%s", self.drone_id, pen_mode_of(settings),
-                      self._pen_forever, self._vel_source)
-        _pl_sec = settings.get("planner", {}) or {}
-        self._cpn_stall_t = (float(_pl_sec.get("pen_stall_freeze_t", 1.0))
-                             if isinstance(_pl_sec, dict) else 1.0)
-        # 云链总开关（2026-10-05 用户裁决：避障=深度图单源）：off ⇒ 不订
-        # /cloud，self.cloud 恒空——占用栅格不建（A* 直线）、云反应层/
-        # sep_obs_guard/DE 云走廊/碰撞占用注入全优雅退化；minclr 指标口径
-        # 死亡（恒 1e9），读账走 col/done_t/min_dclear。巡航避障由 CPN
-        # 深度链承担（pen_authority=cpn_forever），定位=odom/ENU 坐标。
-        # YAML 1.1 陷阱：裸 off 解析为布尔 False 而非字符串 "off"（10-05 smoke
-        # 铁证：lidar 六机全读 keep）——off 判别须同时接住 False 与字符串。
-        _cn_v = _pl_sec.get("cloud_nav", "keep") if isinstance(_pl_sec, dict) else None
-        self._cloud_nav = not (_cn_v is False or str(_cn_v).strip().lower() == "off")
-        # stall 看门狗输入：CPN 最近一拍 dbg 到达时刻（/defop/debug 每个真实
-        # 规划拍一发；settle 窗/HOLD 不发 = 拍间隔即停摆时长）。
-        self._cpn_beat_t = None
         self.pub_cpn_active = rospy.Publisher(ns + "/planning/cpn_active", Bool,
                                               queue_size=1)
         self.pub_vel = rospy.Publisher(ns + "/vel_cmd", Twist, queue_size=10)
@@ -692,24 +875,6 @@ class NavNode:
                                            queue_size=1, latch=True)
         rospy.Subscriber(ns + "/odom", Odometry, self._on_odom)
         rospy.Subscriber(ns + "/planning/goal", PoseStamped, self._on_goal)
-        # 族④ 握手旗（latched，一次到位；cpn 侧 defop_cpn_node 首拍后广播）
-        rospy.Subscriber(ns + "/planning/cpn_ready", Bool, self._on_cpn_ready,
-                         queue_size=1)
-        # stall 看门狗心跳（pen_authority_case §三.3）：CPN 每个真实规划拍
-        # 在 on_timer 成功路径末尾广播 dbg。settle 窗/静默 yield 不发 ->
-        # 拍间隔超 _cpn_stall_t 即规划停摆。仅 cpn_forever 的冻结分支消费。
-        rospy.Subscriber(ns + "/defop/debug", String, self._on_cpn_dbg,
-                         queue_size=2)
-        # 刀一.5（pen_authority_case §三.4）：cpn_forever ⇒ CPN 原始令发
-        # /planning/cpn_vel_raw，本节点中继——套同源 _apply_separation
-        # （Boids sep + hard push + sep_obs_guard + max_vel 夹持；CPN 令同为
-        # world-ENU 同帧直套）后统一组装发 vel_cmd。仅 cpn_forever 订阅 =
-        # nav 档零订阅零行为变更。门与发布门同判据（_cpn_active∧_cpn_ready）
-        # ⇒ 全时段单写者：持笔前 nav 照发本管线令（出生排 sep 保护窗回归），
-        # 持笔后仅此回调发。
-        if self._pen_forever:
-            rospy.Subscriber(ns + "/planning/cpn_vel_raw", Twist,
-                             self._on_pen_raw, queue_size=1)
         # 碰撞事件两模式都订阅：闭环用于注入占用，P0 指标用于计数
         rospy.Subscriber(ns + "/collision", Bool, self._on_collision)
         # 真落地门控（与 world_node collides skip_ground 同语义）：armed=
@@ -732,10 +897,7 @@ class NavNode:
             rospy.Subscriber("/zx2026/task_update", TaskUpdate,
                              self._on_task_update)
         if self.closed_loop:
-            # cloud_nav=off（2026-10-05 裁决：避障=深度图单源）⇒ 不订 /cloud：
-            # self.cloud 恒空，全下游（栅格/反应层/守卫/走廊）优雅退化。
-            if self._cloud_nav:
-                rospy.Subscriber(ns + "/cloud", PointCloud2, self._on_cloud)
+            rospy.Subscriber(ns + "/cloud", PointCloud2, self._on_cloud)
             self._collision_obs = set()  # 碰撞标记：绕过 footprint clearing 的占用格
             if self._hz_enabled:
                 # W7-C2 舰队危险格广播：latched 话题（晚启动/重启机收全史）
@@ -756,13 +918,16 @@ class NavNode:
         self.last_plan_t = -1.0
         rospy.loginfo("nav_node: drone %d closed_loop=%s max_vel=%.1f cruise_z=%.1f "
                       "tc=%s de=%s veto=%s metrics=%s soa=%s swg=%s swq=%s vo=%s "
-                      "ph=%s hz=%s tip=%s vel_src=%s",
+                      "ph=%s hz=%s tip=%s vel_src=%s ha=%s ha_aim=%s ha_rearm=%.0f "
+                      "bh=%s rigid=%.0f ev_win=%.1f",
                       self.drone_id, self.closed_loop, self.max_vel, self.cruise_z,
                       self.tc_enabled, self._de_enabled, self._vt_enabled,
                       self.metrics_enabled, self._soa_enabled, self._swg_enabled,
                       self._swq_enabled, self._vo_enabled,
                       self._ph_enabled, self._hz_enabled, self._tip_enabled,
-                      self._vel_source)
+                      self._vel_source, self._ha_mode, self._ha_aim,
+                      math.degrees(self._ha_rearm),
+                      self._bh_enabled, self._bh_rigid_pts, self._bh_ev_window)
 
     # ---- callbacks ------------------------------------------------------------
     def _on_wind(self, msg):
@@ -775,6 +940,11 @@ class NavNode:
         self.has_odom = True
         v = msg.twist.twist.linear
         self.v_odom = np.array([v.x, v.y, v.z])
+        # 偏航角回填（heading_align 用；与 depth_sim_node.py:421 / lidar_node.py:68
+        # 逐字同式 —— 三条链读同一个 odom 姿态，不允许各算各的）
+        q = msg.pose.pose.orientation
+        self.odom_yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                   1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def _on_neighbor(self, j, msg):
         if j in self._landed_fleet:
@@ -826,12 +996,8 @@ class NavNode:
                 # cpn 可能仍持笔（nav 停播旗后 cpn 续飞）。补一枪 False 旗
                 # + 无条件零速；cpn 侧另有 1.0s 旗 staleness 活性门兜底。
                 # internal 模式 _cpn_active 恒 False=行为逐字节不变。
-                if self._vel_source in ("defop", "ego"):
+                if self._vel_source == "defop":
                     self.pub_cpn_active.publish(Bool(data=False))
-                # 刀一.5（审查 nit）：halt 后 _tick 早退 ⇒ _cpn_gate 永不再算，
-                # 本地旗须同源清零——否则中继门（_cpn_active∧ready）放行
-                # halt 零速之后的在途陈旧 raw 令。
-                self._cpn_active = False
                 self.pub_vel.publish(Twist())       # 一次性零速
                 rospy.loginfo("nav_node: drone %d landed, halt control",
                               self.drone_id)
@@ -896,7 +1062,21 @@ class NavNode:
         # W1 遥测：接触法向闭合速度 + 接触距离。慢速贴树挤入是全史主形态
         # （0.12-0.98 m/s 全低速带），闭合速度是它的定义性指标——比碰撞计数
         # （A/B 主判据只有 ~20-30 事件/臂）高一个量级的判别力。纯观测。
-        v_close, clr_now = self._closing_speed()
+        v_close, clr_now, clr_u = self._closing_speed()
+        if self._de_cblock_r > 0.0 and self._de_enabled:
+            # 起 2：记录"刚撞上的障碍点"。栅格标记对逃逸射线各向同性、给不出
+            # "树在哪"，这条记录才给得出。两路（点云确认 / 盲撞按行进方向）
+            # 见模块级 contact_point_of。
+            cpt, why = contact_point_of(
+                self.est_pos[0], self.est_pos[1], clr_now, clr_u,
+                float(self.v_odom[0]), float(self.v_odom[1]),
+                self._de_cblock_r, self._de_cblock_v, self.scene.drone_radius)
+            if cpt is not None:
+                self._de_contacts.append((cpt[0], cpt[1], rospy.get_time()))
+                rospy.loginfo("nav_node: drone %d escape contact block at (%.2f,%.2f) "
+                              "src=%s clr=%.2f held=%d", self.drone_id,
+                              cpt[0], cpt[1], why, clr_now,
+                              len(self._de_contacts))
         rospy.loginfo("nav_node: drone %d collision marker at (%.1f,%.1f) cell (%d,%d) "
                       "close=%.2f clr=%.2f",
                       self.drone_id, self.est_pos[0], self.est_pos[1], cx, cy,
@@ -930,8 +1110,11 @@ class NavNode:
 
     def _closing_speed(self):
         """接触法向闭合速度遥测：本机速度在"指向最近点云点"方向上的投影
-        （v·u，>0=向障碍闭合）与该点距离。碰撞瞬间采样，无点云返回 (0, 极大)。
-        只读状态不改行为；grep 前缀 "collision marker at" 保持不变。"""
+        （v·u，>0=向障碍闭合）、该点距离、以及该单位方向 u（=接触法向；
+        无点云 None）。碰撞瞬间采样，无点云返回 (0.0, 1e9, None)。
+        只读状态不改行为；grep 前缀 "collision marker at" 保持不变。
+        第三个返回值供 _on_collision 定位"刚撞上的障碍点"（起 2），
+        单调用点 nav_node.py:947 已同步。"""
         v = self.v_odom
         px, py, pz = self.odom[0], self.odom[1], self.odom[2]
         dr = self.scene.drone_radius
@@ -945,9 +1128,9 @@ class NavNode:
                 if d > 1e-6:
                     best_u = ((x - px) / d, (y - py) / d, (z - pz) / d)
         if best_u is None:
-            return 0.0, 1e9
+            return 0.0, 1e9, None
         return (float(v[0] * best_u[0] + v[1] * best_u[1] + v[2] * best_u[2]),
-                float(best_d))
+                float(best_d), best_u)
 
     def _on_cloud(self, msg):
         # 解析 PointCloud2（x/y/z 三个 FLOAT32 字段）
@@ -995,6 +1178,9 @@ class NavNode:
                     else:
                         ev[0] += 1.0
                         ev[1] = self._rebuild_n
+                        if (self._bh_rigid_pts > 0.0
+                                and ev[0] >= self._bh_rigid_pts):
+                            self._occ_rigid.add(c)   # 树干签名 ⇒ 永久封格
             return
         t_now = rospy.get_time() if self._pc_enabled else 0.0
         for (x, y, z) in pts:
@@ -1116,7 +1302,12 @@ class NavNode:
             self._occ_ev, self._rebuild_n, win,
             self._bh_ev_t_near, self._bh_ev_t_far, self._bh_ev_trust_r,
             self._bh_dense, self.g_nx, self.g_ny,
-            self._g_to_world, self.est_pos)
+            self._g_to_world, self.est_pos,
+            self._occ_rigid if self._bh_rigid_pts > 0.0 else None)
+        rospy.loginfo_throttle(
+            10.0, "nav_node: drone %d BH-GRID occ=%d unc=%d rigid=%d ev=%d",
+            self.drone_id, len(occ_s), len(unc_s),
+            len(self._occ_rigid), len(self._occ_ev))
         occ = np.zeros((self.g_ny, self.g_nx), dtype=bool)
         unc = np.zeros((self.g_ny, self.g_nx), dtype=bool)
         for (ix, iy) in occ_s:
@@ -1695,11 +1886,11 @@ class NavNode:
                     self._ph_hold_until - now)
                 return   # W7-C1 镇定窗：逃逸方向冻结（不重选，缓行）
             if self._de_dir is None or now - self._de_t0 >= self._de_dwell:
-                self._de_dir = self._de_pick_dir()
+                self._de_dir = self._de_pick_dir(now)
                 self._de_t0 = now
                 rospy.loginfo_throttle(
-                    5.0, "nav_node: drone %d escape pick dir=%s",
-                    self.drone_id, self._de_dir_str())
+                    5.0, "nav_node: drone %d escape pick dir=%s cblock=%d",
+                    self.drone_id, self._de_dir_str(), self._de_cblock_n)
             return
         self._de_ok_t0 = None
         if self._plan_fail_since is not None:
@@ -1712,9 +1903,11 @@ class NavNode:
                 self._de_total_t0 = now
                 self._de_t0 = now
                 self._de_ok_t0 = None
-                self._de_dir = self._de_pick_dir()
-                rospy.loginfo("nav_node: drone %d DEAD-END escape engaged dir=%s",
-                              self.drone_id, self._de_dir_str())
+                self._de_dir = self._de_pick_dir(now)
+                rospy.loginfo("nav_node: drone %d DEAD-END escape engaged dir=%s "
+                              "cblock=%d contacts=%d", self.drone_id,
+                              self._de_dir_str(), self._de_cblock_n,
+                              len(self._de_contacts))
             elif now < self._ph_hold_until:
                 rospy.loginfo_throttle(
                     2.0, "nav_node: drone %d POST-HIT HOLD escape engage "
@@ -1728,7 +1921,7 @@ class NavNode:
             return "None(hover)"
         return "%.2frad" % math.atan2(self._de_dir[1], self._de_dir[0])
 
-    def _de_pick_dir(self):
+    def _de_pick_dir(self, now=None):
         """均匀 n_dirs 方向做占用栅格射线评分，选逃逸方向。
 
         逃逸场景自机被碰撞标记膨胀壳包住：射线允许穿过 ≤pierce 个占用采样
@@ -1739,7 +1932,12 @@ class NavNode:
         （栅格壳可穿≠真树可穿；真树近旁的逃逸方向会被否决层冻结成磨树）。
         出界按占用处理（围栏低于建图带不在栅格内，防逃向围栏）。
         全方向不可行（reach 全 0）返回 None → 悬停等下拍重试，绝不盲冲占用。
+        起 2：除点云走廊外，另有撞点走廊（_de_contacts，TTL 内）——已确认撞上
+        的障碍点，射线过其半宽 drone_radius+0.1 走廊的方向一并淘汰。撞点距机
+        ~0.35m 时该走廊含整个"朝向障碍"半平面 ⇒ 逃逸只能取切向/背离方向，
+        由 goal 项在半平面内择优（真树被绕开而非顶回）。now 缺省取 rospy 时钟。
         """
+        self._de_cblock_n = 0      # 先清遥测计数（早退路径也须归零）
         occ = self._gocc_infl
         if occ is None:
             return None
@@ -1757,6 +1955,14 @@ class NavNode:
         cloud_corridor = dr + 0.1
         pz = self.odom[2]
         cloud = getattr(self, 'cloud', None) or []
+        # 起 2 撞点淘汰表：开关与记录侧同源（_on_collision 也按此键决定记不记），
+        # 双保险使 contact_block_r=0 时逐位等于原行为（连时钟都不读）。仅留 TTL 内。
+        contacts = []
+        if self._de_cblock_r > 0.0 and self._de_contacts:
+            now_p = rospy.get_time() if now is None else float(now)
+            contacts = [c for c in self._de_contacts
+                        if now_p - c[2] <= self._de_cblock_ttl]
+            self._de_contacts = contacts
         best, best_s, best_reach = None, -1e18, 0.0
         for k in range(self._de_ndirs):
             th = 2.0 * math.pi * k / self._de_ndirs
@@ -1775,6 +1981,20 @@ class NavNode:
                     break
             if not cloud_ok:
                 continue
+            if contacts:
+                cblock = False
+                for (ox, oy, _tc) in contacts:
+                    ex = ox - self.est_pos[0]
+                    ey = oy - self.est_pos[1]
+                    t = ex * dx + ey * dy
+                    if t <= 0.0 or t > self._de_ray:
+                        continue
+                    if abs(ex * dy - ey * dx) <= cloud_corridor:
+                        cblock = True
+                        break
+                if cblock:
+                    self._de_cblock_n += 1
+                    continue
             pierce = free_run = 0
             reach = 0.0
             d = step
@@ -1874,21 +2094,6 @@ class NavNode:
     # 水平分量（垂直由任务高度控制）；仅在巡航高度（z≥min_z）生效，避免起降/
     # 投放阶段被拉向地面邻居。近障碍时按 clearance 缩放，防止聚合把 drone 拉
     # 进树。本函数在分离/避障之前执行，二者可安全覆盖群集力（安全优先）。
-    def _apply_z_floor_post(self, cmd):
-        """贴地 vz 地板**二次**兜底（键 closed_loop.z_floor_post，默认关）。
-
-        与 L1402 同式，唯一区别是施加于**反应层之后**：分离场/云避障在地板
-        之后仍会 `cmd[2] -= push*uz`，投放下降段贴近平台时"最近障碍点"落到
-        机上方，逃离方向朝下，把下降段越推越深（探针实测制导 +1.06 / 实发
-        -0.11，地板 +0.01 被突破）。此处补上兜底，landing_armed 豁免原样
-        保留（P4：否则与 touchdown_z 下降对抗，z≈0.4 悬停永不落地）。
-        """
-        if not self._z_floor_post or self.landing_armed:
-            return cmd
-        cmd[2] = max(cmd[2],
-                     (0.5 + self.scene.venue["ground_z"] - self.odom[2]) * 1.0)
-        return cmd
-
     def _apply_swarm(self, cmd):
         if not self.swarm_enabled or self.odom[2] < self.swarm_min_z:
             return cmd
@@ -2419,12 +2624,7 @@ class NavNode:
             if ob.kind == "fence" and not self._bm_enabled:
                 continue
             if ob.kind == "tree":
-                # 整树 z 跨度 = [地面, 树顶]。本机球整体在树顶之上才可整棵跳过。
-                # 旧判据 crown_z + crown_r 是「球冠」时代的近似顶点；云杉冠底
-                # 中位 1.22 压巡航带、冠已是真障碍，故改用包络真顶点。
-                zr = self.scene._crown_z_range(ob)
-                top = zr[1] if zr else self.scene.venue["ground_z"] + ob.trunk_h
-                if top < pz - dr:
+                if ob.crown_z + ob.crown_r < pz - dr:
                     continue
             elif ob.hi[2] < pz - dr or ob.lo[2] > pz + dr:
                 continue
@@ -2452,31 +2652,24 @@ class NavNode:
     def _obstacle_nearest(self, ob, q):
         """返回障碍 ob 上距 q 最近的点 (nx,ny,nz) 与距离 nd。
 
-        tree = 树干圆柱 ∪ 冠包络圆柱 的最近点（取两段各自最近点中更近者，
-        对并集是精确的）。冠包络用 scene._crown_z_range 单一口径，与
-        collides / collides_xy / raycast / 碰撞判官保持一致。
+        tree 按「圆柱树干」计算最近点（球冠仅视觉，不参与避障）；
         其余 kind 退化为 AABB 最近点。
         """
         qx, qy, qz = q
         if ob.kind == "tree":
             gz = self.scene.venue["ground_z"]
-            cands = [(ob.trunk_r, gz, gz + ob.trunk_h)]
-            zr = self.scene._crown_z_range(ob)
-            if zr is not None:
-                cands.append((ob.crown_r, zr[0], zr[1]))
-            best = None
+            z0 = gz
+            z1 = gz + ob.trunk_h
+            # 树干（竖直圆柱侧面 + z 夹紧）；球冠仅视觉，不参与避障
             dxy = math.hypot(qx - ob.cx, qy - ob.cy)
-            for (rad, z0, z1) in cands:
-                if dxy > 1e-9:
-                    nx = ob.cx + rad * (qx - ob.cx) / dxy
-                    ny = ob.cy + rad * (qy - ob.cy) / dxy
-                else:
-                    nx, ny = ob.cx + rad, ob.cy
-                nz = min(max(qz, z0), z1)
-                nd = math.sqrt((nx - qx) ** 2 + (ny - qy) ** 2 + (nz - qz) ** 2)
-                if best is None or nd < best[3]:
-                    best = (nx, ny, nz, nd)
-            return best
+            if dxy > 1e-9:
+                nx = ob.cx + ob.trunk_r * (qx - ob.cx) / dxy
+                ny = ob.cy + ob.trunk_r * (qy - ob.cy) / dxy
+            else:
+                nx, ny = ob.cx + ob.trunk_r, ob.cy
+            nz = min(max(qz, z0), z1)
+            nd = math.sqrt((nx - qx) ** 2 + (ny - qy) ** 2 + (nz - qz) ** 2)
+            return nx, ny, nz, nd
         lo, hi = ob.lo, ob.hi
         nx = min(max(qx, lo[0]), hi[0])
         ny = min(max(qy, lo[1]), hi[1])
@@ -2565,6 +2758,10 @@ class NavNode:
             if now - self.last_plan_t >= 1.0 / self.replan_hz:
                 self._replan()
             cmd = self._closed_loop_cmd()
+            # 航路分量快照：必须**紧跟指令生产、早于一切反应层**，这样
+            # cmd − (ha_px,ha_py) 才等于分离/集群/VO/云避障的全部增量。
+            # （放到反应层之后 = 逃逸推仍留在快照里、仍被门控缩放 ⇒ 修复失效）
+            ha_px, ha_py = float(cmd[0]), float(cmd[1])
             cmd = self._apply_swarm(cmd)
             cmd = self._apply_separation(cmd)
             cmd = self._apply_vo_avoid(cmd)   # W6 VO-lite（默认关）
@@ -2573,10 +2770,14 @@ class NavNode:
             if now - self.last_plan_t > 2.0:
                 self._replan()
             cmd = self._god_mode_cmd()
+            ha_px, ha_py = float(cmd[0]), float(cmd[1])   # 航路分量（同上）
             cmd = self._apply_swarm(cmd)
             cmd = self._apply_separation(cmd)
             cmd = self._apply_vo_avoid(cmd)   # W6 VO-lite（默认关）
             cmd = self._apply_scene_avoidance(cmd)
+
+        # 航路分量 (ha_px, ha_py) 已在上面两个分支**各自紧跟指令生产**处取好
+        # （见 heading_compose 尾注）：之后叠加的一切都是反应层增量。
 
         # 风前馈：顶风补偿（共享风 world 系水平分量；风关/非飞行期时值为 0 → 零侵入）
         if self.wind_ff > 0.0:
@@ -2635,7 +2836,7 @@ class NavNode:
         # P3 终端交接：每拍刷新持笔旗并广播（cpn 端 on_timer 首行 yield 的
         # 源头旗；本拍发布门见尾部）。internal 模式不算不广播（_cpn_gate 恒
         # False，旗无行为意义，省流）。
-        if self._vel_source in ("defop", "ego"):
+        if self._vel_source == "defop":
             self._cpn_active = self._cpn_gate(now)
             self.pub_cpn_active.publish(Bool(data=self._cpn_active))
 
@@ -2643,32 +2844,55 @@ class NavNode:
         if vn > self.max_vel:
             cmd = cmd * (self.max_vel / vn)
 
-        # 贴地 vz 地板二次兜底（2026-09-30，键默认关）：见 _apply_z_floor_post。
-        cmd = self._apply_z_floor_post(cmd)
-        # ---- 巡航高度归因仪（2026-10-01，只读，行为零变更）----
-        # 归档里**不存在逐拍高度流**（nav_metrics 无 z、probe.json 只有计数），
-        # 不装这条就无法回答"巡航高度到底变了没有"。1Hz 节流，按 cpn 分组
-        # 取分位 = 林带巡航高度的直接读数（cpn=1 即 CPN 持笔期）。
-        rospy.loginfo_throttle(
-            1.0, "nav_node: drone %d ALT z=%.2f gz=%.2f cmd=%.2f cpn=%d",
-            self.drone_id, self.odom[2],
-            (self.goal[2] if self.goal is not None else -9.0),
-            cmd[2], 1 if self._cpn_active else 0)
-        # ---- UNAUTHORIZED_LANDING 归因仪（2026-09-30，只读，行为零变更）----
-        # 低空未 armed 却仍被判"向下"= 地板可能已被下游反应层推穿。打出
-        # 基线/地板/终值三元，一眼分辨病根。窄窗+0.5s 节流，平时零开销。
-        if (not self.landing_armed) and self.goal is not None \
-                and self.odom[2] < 0.9 and cmd[2] < 0.0:
-            rospy.loginfo_throttle(
-                0.5,
-                "nav_node: drone %d LOWZ z=%.2f goalz=%.2f base=%.2f "
-                "floor=%.2f final=%.2f",
-                self.drone_id, self.odom[2], self.goal[2],
-                (self.goal[2] - self.odom[2]) * 1.5,
-                (0.5 + self.scene.venue["ground_z"] - self.odom[2]) * 1.0,
-                cmd[2])
+        # ---- 机头对齐（heading_align；补上本节点从未写过的 angular.z）------
+        # 落点在**构造 tw 之前**，tw 一次构造两个分支共用（下方 defop 持笔 /
+        # internal），故同一处改动天然同时修好 DeFoP 的 nav 持笔时段。
+        # ★ 2026-10-07 夜改：门控输入由「最终 cmd」改为**航路分量 (ha_px,ha_py)**
+        # （理由与法证见 heading_compose 尾注：分离层逃逸推曾在这里被乘 0.15）。
+        # 叠回反应层后由下方末闸重新保证发布模 ≤ max_vel。
+        # 救援态只跟踪不门控（逃逸是恢复不是飞行路线，见 heading_gate 尾注）。
+        ha_mode = self._ha_mode
+        if ha_mode == "strict" and (self._de_active or self._gs_active):
+            ha_mode = "track"
+        # 瞄准源（heading_align.aim，10-08 修复默认 final=最终去向 cmd；
+        # path=10-07 夜行为对照臂）。缩放目标恒为航路分量 (ha_px, ha_py)。
+        if self._ha_aim == "path":
+            aim_x, aim_y = ha_px, ha_py
+        else:
+            aim_x, aim_y = float(cmd[0]), float(cmd[1])
+        ha_rate, ha_vx, ha_vy, ha_eng, ha_tgt, ha_t0, ha_gated = heading_gate(
+            self.odom_yaw, aim_x, aim_y, ha_px, ha_py, cmd[2],
+            self._ha_engaged, self._ha_target, self._ha_t0, now, ha_mode,
+            self._ha_rate_max, self._ha_gain, self._ha_enter, self._ha_exit,
+            self._ha_vh_min, self._ha_scale, self._ha_max_s, self._ha_rearm)
+        # 门控一拍 compose 会把航路压成 scale·path ⇒ **真实去向** = scale·path + inc
+        # ≠ 压缩前的 cmd。第一遍的 aim 是压缩前方向，机头若追它，稳态就永久残留
+        # 一个「闸门自己拧走的角度」（10-08 局实测 gated 样本 |crab| 中位 88.1°、
+        # 未门控仅 4.0°）。**决策仍按压缩前方向**（滞回语义逐字不变），只把速率与
+        # 锁存目标换成真实去向——若连决策也改，会出现「释放→去向变回压缩前方向→
+        # 又进门」的极限环。
+        if ha_gated and self._ha_aim != "path":
+            gx = ha_px * self._ha_scale + (aim_x - ha_px)
+            gy = ha_py * self._ha_scale + (aim_y - ha_py)
+            if math.hypot(gx, gy) >= self._ha_vh_min:
+                r2 = heading_gate(
+                    self.odom_yaw, gx, gy, ha_px, ha_py, cmd[2],
+                    self._ha_engaged, self._ha_target, self._ha_t0, now, ha_mode,
+                    self._ha_rate_max, self._ha_gain, self._ha_enter,
+                    self._ha_exit, self._ha_vh_min, self._ha_scale,
+                    self._ha_max_s, self._ha_rearm)
+                ha_rate, ha_tgt, ha_t0 = float(r2[0]), r2[4], r2[5]
+        cmd[0], cmd[1] = heading_compose((ha_vx, ha_vy), (ha_px, ha_py), cmd)
+        # 叠回反应层后可能重新越顶 → 末闸（发布模 ≤ max_vel 的原保证不破）
+        vn2 = float(np.linalg.norm(cmd))
+        if vn2 > self.max_vel:
+            cmd = cmd * (self.max_vel / vn2)
+        self._ha_engaged, self._ha_target, self._ha_t0 = ha_eng, ha_tgt, ha_t0
+        self._ha_emit(now, ha_gated, ha_rate, cmd, ha_px, ha_py)
+
         tw = Twist()
         tw.linear.x, tw.linear.y, tw.linear.z = cmd[0], cmd[1], cmd[2]
+        tw.angular.z = ha_rate
         if self._halted:
             # halt 双查（run d83e657c 法证，2026-09-10）：落地回调在独立线程，
             # 可在本拍已在飞时置位 _halted 并发零速——本拍尾部的发布若照发，
@@ -2677,35 +2901,19 @@ class NavNode:
             # 放大成永久爬升：d1 落地后云避障对 0.38m 贴身障碍推 vz>0 覆盖
             # 零速 → 0.22m/s 匀速爬至 5m → OVER_HEIGHT 退赛（任务已 DONE）。
             return
-        if self._vel_source in ("defop", "ego"):
+        if self._vel_source == "defop":
             # P3 终端交接：_cpn_active=False = nav 持笔（terminal 终端接近 /
             # departure 出发场未清 / no_goal）——本拍 cmd 照常发布；True =
             # cpn 持笔（cruise 窗口），nav 静默（cmd 只算不发）。全管线
             # （规划/反应层/swarm/arrived/metrics）照跑到这一行为止。1Hz 心跳
             # 日志 = shadow 活体证据，cpn=(旗)(原因) 为交接闸门状态。
-            # 族④：cpn_ready=False（首拍未出）时旗虽 True，nav 仍照发——
-            # 暖机真空的堵口（见 __init__ 握手注释）。
-            if not (self._cpn_active and self._cpn_ready):
+            if not self._cpn_active:
                 self.pub_vel.publish(tw)
-            elif self._pen_forever and self._cpn_beat_stale(now):
-                # pen_authority_case §三.3 stall 看门狗（仅 cpn_forever）：
-                # CPN 持笔但拍间隔超阈 ⇒ 冻结零速悬停——不交 nav 旧路径、
-                # 不保持末指令（G-stall 家族：停摆期 vel_cmd 末值保持=无感知
-                # 滑行 2-7m 盲跑）；下一拍 dbg 到达自动解冻（恢复即续，无
-                # 迟滞无清算）。CPN settle 窗/HOLD 期本就发零不发 dbg——冻结
-                # 输出与其一致，双写同值无害。
-                self.pub_vel.publish(Twist())
-                rospy.loginfo_throttle(
-                    1.0, "nav_node: drone %d PEN_STALL freeze (%.2fs since "
-                    "last cpn beat)", self.drone_id,
-                    now - (self._cpn_beat_t if self._cpn_beat_t is not None
-                           else now))
             rospy.loginfo_throttle(
                 1.0, "nav_node: drone %d SHADOW cmd=(%.2f,%.2f,%.2f) "
-                "arrived=%s cpn=%s(%s) ready=%d",
+                "arrived=%s cpn=%s(%s)",
                 self.drone_id, cmd[0], cmd[1], cmd[2], self.goal_reached(),
-                self._cpn_active, self._term_reason,
-                1 if self._cpn_ready else 0)
+                self._cpn_active, self._term_reason)
         else:
             self.pub_vel.publish(tw)
         # nav/arrived 与发布源解耦：goal_reached 是纯 odom/est-vs-goal 距离
@@ -2715,67 +2923,47 @@ class NavNode:
         # P0 指标（纯观测）
         self._update_metrics(cmd, now)
 
-    # ---- P3 终端交接闸门（shadow 模式单写者仲裁） ---------------------------
-    def _on_cpn_ready(self, msg):
-        """族④ 握手回调（latched 一次到位）：cpn 首拍已出 = 允许交笔。"""
-        self._cpn_ready = bool(msg.data)
+    # ---- 机头对齐遥测（纯观测；**不得改 nav_metrics 列**）--------------------
+    def _ha_emit(self, now, gated, rate, cmd, px, py):
+        """累计被门控秒数 + 1Hz 心跳（每机独立进程 ⇒ nav_node_<id>.log 的
+        末值即累计 align_s，单调递增；tools/ha_census.py 离线普查用）。
 
-    def _on_cpn_dbg(self, _msg):
-        """CPN 拍心跳（stall 看门狗输入，pen_authority_case §三.3）：只记
-        到达时刻，零解析零行为。"""
-        self._cpn_beat_t = rospy.get_time()
+        只累计「两拍都被门控」的 dt：单拍门控不值得计（进门/退出各一拍），
+        且 dt 上限 1.0s 防挂起或时间跳变时把 align_s 冲成假高值。
+        mode=off 时整个函数直返 —— 基线局的 rosout 逐字节不变。
 
-    def _on_pen_raw(self, msg):
-        """刀一.5 中继回调（pen_authority_case §三.4，仅 cpn_forever 订阅）：
-        CPN 原始令（world-ENU Twist）套同源 Boids sep 混合后统一组装发
-        vel_cmd——把机间分离仲裁挂到统一 cmd 组装点（smoke#1 机间新形 3 起
-        的根因修复：CPN 直发 vel_cmd 裸令无 sep）。门=_halted 短路 ∨
-        非（cpn_active∧cpn_ready）（与发布门同判据 ⇒ 单写者恒成立）。
-        零令放行不混 sep：CPN settle 窗/异常 fail-safe 发精确零
-        （defop_cpn_node on_timer 两处），混入 sep
-        推力 = 撞后冻结期被强制位移，settle 语义破坏。sep 混合失败放行
-        原始令——sep 是增强守卫，失效不得吞 CPN 的深度链避障主令
-        （CPN 才是避障 authority；swarm coh/ali 与云反应层刻意不挂：前者
-        与 CPN 寻的对抗，后者已随 cloud_nav=off 删除）。
-        审查修复（wf_ba224dac）：门加 _halted 短路（halt 后 _cpn_gate 不再
-        跑、本地 _cpn_active 清旗前在途陈旧令不得越过 halt 零速）；非零
-        raw 到达即刷新 beat（raw=活体心跳——raw 先于 dbg 到达的恢复沿不再
-        被冻结零覆盖，dbg 链死亡而 CPN 仍出令的病理态下单写者恒成立；
-        settle/异常零令不刷新=PEN_STALL 可观测性不变且同值零双写无害）；
-        传 np.array 与管线同型——_apply_separation 的 max_vel 夹持行
-        cmd*(max_vel/vn) 对 list×np.float64 必抛 TypeError（近邻硬推
-        d<1.3m 输出必超 2.0 该行必走），except 放行=sep 恰在机间碰撞
-        区间整体失效（审查 major 实锤）。"""
-        if self._halted or not (self._cpn_active and self._cpn_ready):
+        【2026-10-08 补字段：psi/err/crab】此前只打 `yaw_deg`，而 yaw 是**绝对值**
+        ——飞北向的机 yaw=+90° 是正常的，无法据此判断「机头是否对准去向」。10-07
+        23:48 局六机 yaw 统计出 |yaw|均 49-84°、极差 330-360°，看着像失控，实则
+        **不可判**（编队本来就要飞遍四个象限）。三个新字段把口径补齐：
+          psi_deg  = 门控**目标**方向 = 航路分量 atan2(ha_py, ha_px)（= heading_gate
+                     内部算的 psi_d，此处按同式复算，不改纯函数签名与返回值）
+          err_deg  = wrap_pi(psi - yaw)：门控误差，> enter(20°) 进门、
+                     > 1.5/2.5=34.4° 即速率饱和（增益与限幅之比，设计内）
+          crab_deg = wrap_pi(atan2(cmd[1],cmd[0]) - yaw)：**实际去向**（最终指令，
+                     含反应层增量）与机头之差 —— 这正是「盲撞」的因果量：蟹行角
+                     |crab|>43.5° 时机头前视锥完全照不到自己正在去的方向。
+        """
+        if self._ha_mode == "off":
             return
-        cmd = [msg.linear.x, msg.linear.y, msg.linear.z]
-        if math.sqrt(cmd[0] * cmd[0] + cmd[1] * cmd[1]) > 0.05:
-            self._cpn_beat_t = rospy.get_time()
-            try:
-                mixed = self._apply_separation(np.array(cmd, dtype=float))
-                _d = math.hypot(mixed[0] - cmd[0], mixed[1] - cmd[1])
-                if _d > 0.02:
-                    # sep 仲裁活体证据（rosout 可对质，同 lidar cloud_nav 线）
-                    rospy.loginfo_throttle(
-                        2.0, "nav_node: drone %d PEN_RAW sep push %.2f m/s",
-                        self.drone_id, _d)
-                cmd = mixed
-            except Exception:
-                rospy.logwarn_throttle(
-                    2.0, "nav_node: drone %d pen_raw sep mix fail -> raw "
-                    "pass-through", self.drone_id)
-        tw = Twist()
-        tw.linear.x, tw.linear.y, tw.linear.z = cmd[0], cmd[1], cmd[2]
-        tw.angular.z = msg.angular.z
-        self.pub_vel.publish(tw)
+        if gated and self._ha_last_t is not None:
+            dt = now - self._ha_last_t
+            if 0.0 < dt < 1.0:
+                self._ha_align_s += dt
+        self._ha_last_t = now
+        psi = math.atan2(py, px) if math.hypot(px, py) > 1e-6 else self.odom_yaw
+        err = wrap_pi(psi - self.odom_yaw)
+        crab = (wrap_pi(math.atan2(cmd[1], cmd[0]) - self.odom_yaw)
+                if math.hypot(cmd[0], cmd[1]) > 1e-6 else 0.0)
+        rospy.loginfo_throttle(
+            1.0, "nav_node: drone %d HEADING-ALIGN mode=%s gated=%d align_s=%.2f "
+            "yaw_deg=%.1f rate=%.2f vh=%.2f psi_deg=%.1f err_deg=%.1f crab_deg=%.1f",
+            self.drone_id, self._ha_mode, int(bool(gated)), self._ha_align_s,
+            math.degrees(self.odom_yaw), float(rate),
+            float(math.hypot(cmd[0], cmd[1])),
+            math.degrees(psi), math.degrees(err), math.degrees(crab))
 
-    def _cpn_beat_stale(self, now):
-        """CPN 拍停摆判据：从未见过拍（None）或最近拍距今 > _cpn_stall_t。
-        持笔前提是 ready=True（首拍已出 ⇒ dbg 必发过），None 仍判停摆 =
-        fail-safe（dbg 链丢失即冻结）。"""
-        return (self._cpn_beat_t is None
-                or (now - self._cpn_beat_t) > self._cpn_stall_t)
-
+    # ---- P3 终端交接闸门（shadow 模式单写者仲裁） ---------------------------
     def _cpn_gate(self, now):
         """每拍计算 cpn 持笔旗（defop shadow 模式；internal 恒 False）。
 
@@ -2790,7 +2978,7 @@ class NavNode:
         最小距离 > _cpn_depart_r（2.0）才算清空——出生排 1.5m 间距期间
         nav 持笔（分离场照常管辖），散开后交 cpn。
         """
-        if self._vel_source not in ("defop", "ego"):
+        if self._vel_source != "defop":
             self._term_reason = "internal"
             return False
         has_goal = self.goal is not None
@@ -2815,12 +3003,7 @@ class NavNode:
                 continue                 # 失联/过期邻居不算在场
             d = math.hypot(p[0] - self.odom[0], p[1] - self.odom[1])
             min_d = d if min_d is None else min(min_d, d)
-        if self._pen_forever:
-            # pen_authority_case §三.2：CPN 全程持笔——出发场门旁路（出生排
-            # 1.5m 间距不再拖笔 15-20s；机间分离交 Boids sep 仲裁守卫，杀线
-            # 盯 drone-drone 新形）。邻居统计照算（SHADOW 日志可观测性）。
-            departure_clear = True
-        elif min_d is None:
+        if min_d is None:
             # 校验 V1-M4 fail-closed：无新鲜邻居=冷启动/通信断档，出生排
             # 盲交接正是要修的缺陷；首目标后 5s 放行（真机单机场景不受困）。
             departure_clear = (self._goal_first_t is not None
@@ -2838,9 +3021,8 @@ class NavNode:
             self._term_reason = "departure"
         else:
             self._term_reason = "cruise"
-        return cpn_active_of(self._vel_source in ("defop", "ego"), engaged,
-                             departure_clear, has_goal,
-                             forever=self._pen_forever)
+        return cpn_active_of(self._vel_source == "defop", engaged,
+                             departure_clear, has_goal)
 
     # ---- 到达查询（供 mission 使用） ----------------------------------------
     def goal_reached(self):

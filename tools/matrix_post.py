@@ -9,7 +9,7 @@ FAIL run 没有到达 DONE，collector 不写时间戳定稿 YAML → matrix_run
      sim_t ∈ [origin, origin+700] 的行，每机取最后一行（计数器为累计值）聚合。
   2. 输出 matrix_results_fixed.csv + 每臂汇总表。
 
-用法: python3 ~/zx2026_defop_ws/tools/matrix_post.py [matrix_dir]
+用法: python3 ~/zx2026_arena_ws/tools/matrix_post.py [matrix_dir]
 """
 import csv
 import glob
@@ -19,7 +19,7 @@ import sys
 
 import yaml
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 
 
 def _time_limit_s():

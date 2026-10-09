@@ -93,15 +93,6 @@ class AStar:
                     continue
                 if self._occ(nx, ny):
                     continue
-                # **禁切角**（2026-10-06 ego 全局路由案）：对角线一步若两个正交
-                # 邻格任一被占，这一步就是从障碍角上擦过去——两端格心各自净空，
-                # 但**连线**最近点可以掉到 pad 以下。实测 ego d5 net_only：
-                # 格心 (-23.5,4.0)/(-23.0,3.5) 距网 0.65/0.52（都 >0.45），
-                # 连线最近点只有 0.4596 < 0.45。禁掉后路径最多多绕一格，
-                # 换来「任意相邻格心连线亦净空」。详见 docs/ego_blind_flight_case.md
-                if dx != 0 and dy != 0 and \
-                        (self._occ(cx + dx, cy) or self._occ(cx, cy + dy)):
-                    continue
                 ng = g_cost[cur] + cost
                 if (nx, ny) not in g_cost or ng < g_cost[(nx, ny)]:
                     g_cost[(nx, ny)] = ng

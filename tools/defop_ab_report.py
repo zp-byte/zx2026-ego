@@ -3,7 +3,7 @@
 """tools/defop_ab_report.py — DeFoP A/B 矩阵报告（读 defop_ab_run.py 的 CSV）。
 
 用法（WSL）：
-  cd ~/zx2026_defop_ws && python3 tools/defop_ab_report.py results/defop_ab_p3.csv
+  cd ~/zx2026_arena_ws && python3 tools/defop_ab_report.py results/defop_ab_p3.csv
 
 口径（P3 定谳，2026-09-29）：
   * **禁单判**：同 seed 同臂跑次有方差（基线 seed43 实测 55/70/80 三档），

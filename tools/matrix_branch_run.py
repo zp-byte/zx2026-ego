@@ -18,7 +18,7 @@
 
 wall-monotonic 漂移检测继承 matrix_run 纪律（>30s=睡眠污染→留档 __contaminated 自动重跑）。
 
-用法: python3 ~/zx2026_defop_ws/tools/matrix_branch_run.py
+用法: python3 ~/zx2026_arena_ws/tools/matrix_branch_run.py
 """
 import glob
 import os

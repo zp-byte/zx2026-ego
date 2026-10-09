@@ -4,7 +4,7 @@
 import copy
 import sys
 
-sys.path.insert(0, "/home/ubuntu/zx2026_defop_ws/src/arena_mission/scripts")
+sys.path.insert(0, "/home/ubuntu/zx2026_arena_ws/src/arena_mission/scripts")
 from mission_executor_node import select_via_slots  # noqa: E402
 from zx2026_common.scene import Scene  # noqa: E402
 

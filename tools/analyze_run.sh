@@ -2,7 +2,7 @@
 # 分析当前比赛进度快照：阶段 / 各机任务状态 / 位置 / 计分
 export ROS_MASTER_URI=http://127.0.0.1:11411
 source /opt/ros/noetic/setup.bash
-source /home/ubuntu/zx2026_defop_ws/devel/setup.bash
+source /home/ubuntu/zx2026_arena_ws/devel/setup.bash
 
 echo "=== 阶段 state ==="
 timeout 4 rostopic echo -n1 /zx2026/state 2>/dev/null | grep -E "data" | head -2

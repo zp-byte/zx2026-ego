@@ -4,7 +4,7 @@
 import base64
 import sys
 
-sys.path.insert(0, "/home/ubuntu/zx2026_defop_ws/tools/gcs")
+sys.path.insert(0, "/home/ubuntu/zx2026_arena_ws/tools/gcs")
 import gcs_agent  # noqa: E402  (顶部 import rospy 需 ROS noetic env)
 
 A = gcs_agent.Agent

@@ -13,22 +13,6 @@ meta:
     - -0.25
   - - 27.0
     - 9.0
-  # 冠四层开关【2026-10-07 用户裁决：换场至 zx2026_ws（arena）场景，全恢复含叶视觉】
-  #   true ⇒ 四层同开：world_builder 发 c_crown 碰撞体 / Scene._crown_z_range
-  #   给出冠区间（py 真值 + A* 占用 + raycast 遮挡）/ 判官冠子句生效 / depth_sim
-  #   冠门入画。**树体 = 干 c_trunk + 冠 c_crown + wood mesh + leaf mesh**。
-  #   （本键 10-02 曾裁决为 false「冠物理、视觉双删」；10-07 因换场正式反转。）
-  #   注：冠**视觉**两处 —— world_builder v_leaf（leaf mesh，随本次恢复）与
-  #   arena_world/scene_markers.py 的绿色球标记（RViz；球≠碰撞圆柱，纯装饰，恒在，
-  #   不受本键控）。
-  #   改本键须连带：tools/import_poplar_sdf.py CROWN_COLLIDABLE、
-  #   regen_world.sh 的 mesh/棵 与 冠碰撞 两条计数断言、
-  #   tools/check_poplar_branches.py 冠断言、defop_depth_selftest.py 钉组。
-  crown_collidable: true
-  # branch_file: 本档**无真枝**（换场至 arena 场景：树体 = 干 + 冠 + wood/leaf mesh）。
-  #   键已移除 ⇒ Scene._load_branch_template 取不到模板 ⇒ ob.branches 空 ⇒
-  #   world_builder 不发 c_branch（零代码改，键驱动）。真枝资产已改名
-  #   forest_poplar_branches.json.disabled（留存供 defop 线参照，不删除）。
 trees:
 - x: -23.26
   y: -28.36

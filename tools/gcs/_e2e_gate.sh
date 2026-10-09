@@ -2,7 +2,7 @@
 # P1 闸门 E2E：gate 覆盖率自动判据（PASS/HOLD 两态）+ deploy（贫机 mission+takeoff）
 # 前置断言依赖：feeder 喂 d0 grid（覆盖率爬升）+ d1 fc=AUTO；fake PX4=sysid2(→d1)
 set -u
-cd /home/ubuntu/zx2026_defop_ws/tools/gcs || exit 1
+cd /home/ubuntu/zx2026_arena_ws/tools/gcs || exit 1
 OUT=/mnt/c/Users/24882/Desktop/_gcs_gate_e2e.txt
 : > "$OUT"
 

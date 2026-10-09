@@ -12,25 +12,15 @@ DeFoP 导航节点的图像源：480x270 @15Hz 16UC1 毫米制深度图（真机
 enabled=false 时启动即退、零发布者，INFO 日志一次。默认关=零侵入基线，
 DeFoP 联调时手动开。
 
-几何渲染（numpy 向量化，两级"包围球掩膜 + 子集精确求交"，无逐像素 python
-循环）：先按**树**切一次射线子集（g 条），再在子集内逐原语掩膜+求交。
-单帧 CPU 目标 <=80ms —— 2026-10-01 实测破线：真枝 1888 段（每棵 8–10 段）
-把逐原语掩膜次数从 406 推到 2294，林内位姿 165–185ms/帧（超 2.5×），
-六机分摊后 depth 链降到 ~1.5Hz；g 条即为此而立。
+几何渲染（numpy 向量化，逐原语"角半径包围球掩膜 + 子集精确求交"，无逐像素
+python 循环，单帧 CPU 目标 <=80ms）：
   a) 地面平面 z=ground_z 相交；
   b) 树干=竖直圆柱（有限高 trunk_h 从 ground_z 起）；预筛：机位水平距离
-     > max_range + margin（margin=trunk_r+max(crown_r,冠半高)，≥冠圆柱水平
-     半径）的树整棵跳过；
-  c) 树冠=竖直圆柱（2026-10-02 由【球近似】改为与真值同源）：半径 crown_r、
-     z∈[crown_z-crown_h/2, crown_z+crown_h/2]（杨树 table；crown_h=None 旧
-     场景 → z∈[crown_z-crown_r, crown_z+crown_r]）——口径逐字同
-     scene._crown_z_range + geo.ray_cylinder（侧面求交、端盖忽略；相机在柱面
-     足迹内时近根在身后、远根=内壁命中，同 ray_cylinder 两根循环）。改前
-     球近似（心=(cx,cy,crown_z)、半径=max(crown_r, crown_h/2)）在冠包络底
-     以下 0.35m（=机高带）横向半宽归零：物理/判官（c_crown 竖圆柱）在撞击
-     高度能接住机顶而图上无冠信号（diag24 三起冠撞的图像读数因此乐观
-     0.4–0.8m）。sphere 档仅保留为旧钉回放杠杆（depth_cfg.crown_shape），
-     非运行档；
+     > max_range + margin（margin=trunk_r+冠包围球半径）的树整棵跳过；
+  c) 树冠【球近似】：球心=(cx, cy, crown_z)，半径=max(crown_r, crown_h/2)
+     （杨树林 table 场景 crown_z=冠包络中心、crown_h=包络高 → 取半高与冠半径
+     的大者保证包络全覆盖；旧场景 crown_z=干顶、crown_h=None → 半径=crown_r）。
+     冠包络本就仅视觉，这里同口径只进画面不进物理；
   d) 树枝=世界系线段 → 有限圆柱（轴线 A→B、半径 r）精确求交（同
      geo.ray_finite_cylinder 模型）；同样按包围球（中点、半径=|AB|/2+r）预筛。
      细枝在 10m 外亚像素属正常，不做抗锯齿；
@@ -43,19 +33,7 @@ DeFoP 联调时手动开。
      盒面最近点距离超量程整盒跳过（射线命中点必在盒面上）。2026-09-29
      T1：西林缘网原本不入画，DeFoP 臂对网盲——P3 A/B 双臂须同世界认知
      （真机网失明是 P4/P5 装订兜底项，与本键无关）；
-  f) 每像素取最近命中（深度缓冲取 min），无命中 = max_range（10000 毫米）；
-  g) 树级两级预筛（2026-10-01，sensor.depth.tree_prefilter）：
-     ① 视锥剔除——整树/单个原语的包围球若整个在视锥外、超量程或在身后，
-        直接跳过不求（_frustum_visible）。原预筛只看水平距离，相机身后的
-        树照样吃一整套全幅掩膜；真枝又多在平视 58° 垂直视场的上缘之外。
-     ② 射线子集——每棵候选树算一个罩住 干+冠+全枝 的保守外包球
-        （_tree_bound），一次掩膜切出子集 dsub/tsub，b/c/d 三步的掩膜与
-        求交都只在子集上做（掩膜是 O(N)=129600 的全幅扫描，此前每棵树的
-        每个原语各扫一遍，真枝导入后林内单帧达 2294 遍）。
-     两道都**只做排除**：外包球严格包含各原语包围球（半径带 _TREE_PAD），
-     视锥判据用半径把球整体算进去（冗余 _CULL_PAD），故输出**逐位无损**。
-     关掉则无任何剔除、子集=全幅，表达式与改前逐位同算（tools/
-     defop_depth_selftest.py [8] 断言 on/off 两图逐字节一致）。
+  f) 每像素取最近命中（深度缓冲取 min），无命中 = max_range（10000 毫米）。
 
 相机模型：机体系原位、朝机头水平前视；cam_pitch_deg 正=机头上仰。图像行
 =ROS 光学系口径（y 朝下、row 0=画面顶）：地平线以上成像于 row<cy
@@ -83,7 +61,6 @@ import numpy as np
 import rospy
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image, CameraInfo
-from std_msgs.msg import Float64MultiArray
 
 from zx2026_common import config as cfg
 from zx2026_common.scene import Scene
@@ -106,18 +83,7 @@ def make_depth_cfg(settings_depth):
         "min_range": float(c.get("min_range", 0.2)),
         "dropout": float(c.get("dropout", 0.02)),
         "render_crowns": bool(c.get("render_crowns", True)),
-        # 树冠渲染形状（2026-10-02）："cylinder"=与真值同源的竖圆柱
-        # （scene.raycast/判官/Gazebo 物理三处同款，见模块 docstring c 条）；
-        # "sphere"=旧球近似——仅自检回放旧钉用，勿在运行档装订（球档在冠底
-        # 高度带图上盲，是 diag24 冠撞图像读数乐观的病灶）。键缺失→cylinder：
-        # 渲染器对齐真值口径不是"新行为"。
-        "crown_shape": str(c.get("crown_shape", "cylinder")),
         "render_boxes": bool(c.get("render_boxes", False)),
-        # 树级包围球预筛（2026-10-01）：每棵候选树先切一次射线子集，干/冠/枝
-        # 的掩膜与求交全在子集上做。**纯提速、逐位无损**（见 _tree_bound 与
-        # render_depth 的 g 条）；false = 子集退化为全幅 = 逐位回到改前算路。
-        # 代码缺省 True：它不是"新行为"，而是把旧行为原样算得更快。
-        "tree_prefilter": bool(c.get("tree_prefilter", True)),
         "cam_pitch_deg": float(c.get("cam_pitch_deg", 0.0)),
     }
 
@@ -165,130 +131,6 @@ def _sphere_mask(o, dirs, center, radius):
         return np.ones(dirs.shape[0], dtype=bool)
     cos_a = math.sqrt(max(0.0, 1.0 - (radius / dist) ** 2))
     return dirs @ (u / dist) > cos_a
-
-
-_TREE_PAD = 1e-3  # m，树级包围球半径冗余（见 _tree_bound）
-
-
-def _sub_idx(tsub, mask):
-    """子集掩膜 → 全幅像素索引。tsub=None 表示全幅（tree_prefilter 关），
-    此时表达式与改前的 np.nonzero(mask)[0] 逐位相同。"""
-    return np.nonzero(mask)[0] if tsub is None else tsub[mask]
-
-
-def _crown_prim(ob):
-    """冠圆柱原语 (cx, cy, r, z0, z1, r_bb)（2026-10-02 与真值同源）。
-
-    半径/高度口径逐字同 scene._crown_z_range + geo.ray_cylinder：
-    crown_h 给包络高（杨树 table）→ z∈[crown_z-h/2, crown_z+h/2]；
-    crown_h=None 旧语义 → z∈[crown_z-r, crown_z+r]（球冠包络也按竖圆柱
-    求交，raycast 同款）。r_bb=sqrt(r²+(span/2)²) 为圆柱外包球半径——
-    sqrt≥max(r, span/2) ⇒ 同时含 sphere 回放档的球，故 tree_prefilter 的
-    外包球对两档都成立（逐位无损前提不变）。本函数与 _tree_bound 的冠项、
-    render_depth 的冠块必须逐字一致（两处口径分家=历史上"冻结 r_crown"
-    同类事故的温床）。
-    """
-    r = float(ob.crown_r or 0.0)
-    zc = float(ob.crown_z or 0.0)
-    if ob.crown_h:
-        h = float(ob.crown_h)
-        z0, z1 = zc - h / 2.0, zc + h / 2.0
-    else:
-        z0, z1 = zc - r, zc + r
-    r_bb = math.sqrt(r * r + ((z1 - z0) / 2.0) ** 2)
-    return float(ob.cx), float(ob.cy), r, z0, z1, r_bb
-
-
-def _tree_bound(ob, brs, gz_o):
-    """树的保守外包球 (center, radius) + 各原语包围球 (C, R)。
-
-    各原语包围球 (c_i, r_i) → 合并 AABB → 心 C=AABB 心 →
-    radius = max_i(|c_i-C| + r_i) + _TREE_PAD。
-
-    该球**严格包含**任一原语的包围球（PAD 项），故"枝掩膜 True ⇒ 树掩膜
-    True"在浮点下也成立——掠射切线上不会因 `dirs @ u_hat > cos_a` 的浮点
-    翻转而丢掉一个像素。这是 tree_prefilter 逐位无损的前提；PAD 只多放
-    几条射线进子集，它们照常走精确求交、无命中，输出不变。
-
-    C/R 按 **干、冠（仅当 r_crown>0）、枝***的顺序返回，供调用方做逐原语
-    视锥剔除（_frustum_visible）；render_depth 里靠 `nhead` 对齐同一顺序。
-
-    原语包围球口径必须与 render_depth 的 b/c/d 三步逐字一致（干=干高中点、
-    半径 sqrt(r²+(h/2)²)；冠=圆柱外包球（心=冠包络中点、半径 _crown_prim
-    的 r_bb=sqrt(r²+(span/2)²)，≥max(r,span/2) 故同时含 sphere 回放档的
-    球）；枝=轴线中点、半径 |AB|/2+br），否则外包球不成立。
-    """
-    cs = []
-    rs = []
-    th = float(ob.trunk_h or 0.0)
-    tr = float(ob.trunk_r or 0.0)
-    cs.append((float(ob.cx), float(ob.cy), gz_o + th / 2.0))
-    rs.append(math.sqrt(tr * tr + (th / 2.0) ** 2))
-    crown_h = float(ob.crown_h) if ob.crown_h is not None else 0.0
-    r_crown = max(float(ob.crown_r or 0.0), crown_h / 2.0)
-    if r_crown > 0.0:
-        # 冠项=圆柱外包球（2026-10-02 球→柱后与 render_depth 冠块同口径）；
-        # 心=(z0+z1)/2=crown_z、半径 r_bb（见 _crown_prim docstring）。
-        ccx, ccy, _cr, cz0, cz1, cr_bb = _crown_prim(ob)
-        cs.append((ccx, ccy, (cz0 + cz1) / 2.0))
-        rs.append(cr_bb)
-    for (sx, sy, sz, ex, ey, ez, br) in brs:
-        cs.append(((sx + ex) / 2.0, (sy + ey) / 2.0, (sz + ez) / 2.0))
-        rs.append(math.hypot(ex - sx, ey - sy, ez - sz) / 2.0 + float(br))
-    C = np.asarray(cs, dtype=np.float64)
-    R = np.asarray(rs, dtype=np.float64)
-    ctr = ((C - R[:, None]).min(axis=0) + (C + R[:, None]).max(axis=0)) / 2.0
-    rad = float(np.max(np.linalg.norm(C - ctr, axis=1) + R)) + _TREE_PAD
-    return ctr, rad, C, R
-
-
-_CULL_PAD = 1e-2  # m，视锥剔除的保守冗余（见 _frustum_visible）
-_EMPTY_MASK = np.zeros(0, dtype=bool)  # 原语被视锥剔除时的空掩膜（.any() 恒 False）
-
-
-def _frustum_planes(depth_cfg, rgt, dwn, fwd):
-    """视锥四个侧面的**内法线** (4,3)，过机位（世界系）。
-
-    相机系下四侧面 u=±um、v=±vm（um=tan(hfov/2)、vm=tan(vfov/2)，由
-    intrinsics 精确导出）。侧面的内法线在 (rgt,dwn,fwd) 基下为
-    (-1,0,um)、(1,0,um)、(0,-1,vm)、(0,1,vm) 各自单位化——校验：内法线对
-    前向轴 (0,0,1) 的点积 = um/sqrt(1+um²) > 0，即前向在视锥内。
-
-    只在树级预筛开启时调用（每帧一次），平面与射线方向都以机位为原点，
-    故原语侧用 (c - o) 直接代入，无需平移。
-    """
-    fx, fy, cx, cy = intrinsics(depth_cfg)
-    um, vm = cx / fx, cy / fy
-    su, sv = math.sqrt(1.0 + um * um), math.sqrt(1.0 + vm * vm)
-    loc = ((-1.0 / su, 0.0, um / su), (1.0 / su, 0.0, um / su),
-           (0.0, -1.0 / sv, vm / sv), (0.0, 1.0 / sv, vm / sv))
-    return np.array([a * rgt + b * dwn + c * fwd for a, b, c in loc])
-
-
-def _frustum_visible(fwd, planes, D, R, t_max):
-    """D=(M,3) 原语中心相对机位、R=(M,) 包围球半径 → keep(M,) bool。
-    False = 该原语整个在视锥外/超量程/在身后，**不可能**被任何画面射线命中。
-
-    三条判据（都用半径把球整体算进去，故保守）：
-      · 身后  fwd·d + r < -PAD          → 全在相机背后；
-      · 超量程 fwd·d - r > t_max + PAD  → 沿射线走 t>t_max，被 _solve_min_t 滤掉
-        （球上任意点 p 有 fwd·(p-o) > t_max，而 t·(fwd·d̂) = fwd·(p-o) 且
-        fwd·d̂ ≤ 1 ⇒ t > t_max）；
-      · 侧外  任一 n_i·d < -(r+PAD)     → 球整体在半空间外；画面射线全程在该
-        半空间内侧（n_i·(t d̂) ≥ 0），故永不进入球的所在侧。
-    PAD 兜住 float32 射线方向相对 float64 平面的 ~1e-7 相对误差（10m 处
-    ~1μm，比 PAD 小四个数量级），确保"剔除 ⇒ 无像素差"。
-
-    判据只做**排除**，永不引入命中，故剔除与否不改变输出（自测 [8] 断言
-    on/off 逐字节一致）。
-    """
-    f = D @ fwd
-    keep = (f + R >= -_CULL_PAD) & (f - R <= t_max + _CULL_PAD)
-    if not keep.any():
-        return keep
-    p = D @ planes.T                                  # (M,4)
-    keep &= ~np.any(p < -(R + _CULL_PAD)[:, None], axis=1)
-    return keep
 
 
 def _solve_min_t(dirs_sub, quad_a, quad_b, quad_c, t_max, eps=1e-6):
@@ -347,7 +189,6 @@ def render_depth(scene, pos, yaw, depth_cfg, rng, cam_dirs=None, inv_len=None,
 
     # ---- 预筛：机位水平距离 <= max_range + margin 的树 ----
     gz_o = scene.venue["ground_z"]
-    prefilt = bool(depth_cfg.get("tree_prefilter", True))
     cand = []
     box_cand = []  # 盒障碍候选 [(lo,hi),...]（render_boxes 开时收集）
     for ob in scene.obstacles:
@@ -376,60 +217,23 @@ def render_depth(scene, pos, yaw, depth_cfg, rng, cam_dirs=None, inv_len=None,
             far = max(math.hypot(b[0] - b[3], b[1] - b[4]) for b in brs)
             if dxy > t_max + margin + far:
                 brs = []
-        if prefilt:
-            tctr, tR, C, R = _tree_bound(ob, brs, gz_o)
-        else:
-            tctr = tR = C = R = None
-        cand.append((ob, brs, tctr, tR, C, R))
+        cand.append((ob, brs))
 
     # ---- b) 树干圆柱 + c) 树冠球 + d) 树枝有限圆柱 ----
-    # 树级预筛（两级）：
-    #   ① 视锥剔除——整树在视锥外/超量程/身后则连掩膜都不算（原预筛只看水平
-    #      距离，相机身后的树照样吃一整套全幅掩膜）；
-    #   ② 掩膜定子集——一次全幅掩膜 → (tsub, dsub)，b/c/d 的掩膜与求交全在
-    #      子集上做，命中索引经 _sub_idx(tsub, mask) 映射回全幅。
-    # 再对每个原语做一次视锥剔除（keep），跳过画面之上/之外的干枝（真枝在
-    # z 4.2-8.3，平视 58° 垂直视场下大量在画面上缘之外）。
-    # prefilt 关时 tsub=None / dsub=dirs（全幅）且无任何剔除，表达式与改前逐位同算。
-    planes = _frustum_planes(depth_cfg, rgt, dwn, fwd) if prefilt else None
-    for ob, brs, tctr, tR, C, R in cand:
-        if prefilt:
-            if not bool(_frustum_visible(fwd, planes, tctr - o, np.array([tR]),
-                                         t_max)[0]):
-                continue
-            tmask = _sphere_mask(o, dirs, tctr, tR)
-            if not tmask.any():
-                continue
-            tsub = np.nonzero(tmask)[0]
-            dsub = dirs[tsub]
-        else:
-            tsub = None
-            dsub = dirs
+    for ob, brs in cand:
         # 冠参数逐树重算（verify blocker 修复 2026-09-29：原版沿用预筛循环
         # 最后一棵候选树的冻结 r_crown，13 候选 12 错配、58.7% 像素被幻影
         # 冠面污染——冠块三处引用全部受害）
         crown_r = float(ob.crown_r or 0.0)
         crown_h = float(ob.crown_h) if ob.crown_h is not None else 0.0
         r_crown = max(crown_r, crown_h / 2.0)
-        # 逐原语视锥剔除（C/R 由 _tree_bound 按 干、冠(仅当 r_crown>0)、枝 的顺序
-        # 返回，nhead 即"头两个原语"是否含冠的边界）。被剔除的原语用空掩膜短路，
-        # 与改前逐位同算的路径不受影响（prefilt 关时 do_* 恒真、brs_vis 即 brs）。
-        if prefilt:
-            keep = _frustum_visible(fwd, planes, C - o, R, t_max)
-            nhead = 2 if r_crown > 0.0 else 1
-            do_trunk = bool(keep[0])
-            do_crown = bool(keep[1]) if nhead == 2 else False
-            brs_vis = [b for b, k in zip(brs, keep[nhead:]) if bool(k)]
-        else:
-            do_trunk = do_crown = True
-            brs_vis = brs
         # 树干：包围球（干高中点、半径 sqrt(r^2+(h/2)^2)）掩膜 → 子集精确求交
         zm = gz_o + ob.trunk_h / 2.0
         ctr = np.array([ob.cx, ob.cy, zm])
         r_bb = math.sqrt(ob.trunk_r ** 2 + (ob.trunk_h / 2.0) ** 2)
-        mask = _sphere_mask(o, dsub, ctr, r_bb) if do_trunk else _EMPTY_MASK
+        mask = _sphere_mask(o, dirs, ctr, r_bb)
         if mask.any():
-            d = dsub[mask].astype(np.float64)
+            d = dirs[mask].astype(np.float64)
             dxm = o[0] - ob.cx
             dym = o[1] - ob.cy
             a = d[:, 0] ** 2 + d[:, 1] ** 2
@@ -440,68 +244,24 @@ def render_depth(scene, pos, yaw, depth_cfg, rng, cam_dirs=None, inv_len=None,
                 zh = o[2] + t[ok] * d[ok, 2]
                 inz = (zh >= gz_o) & (zh <= gz_o + ob.trunk_h)
                 if inz.any():
-                    idx = _sub_idx(tsub, mask)[ok][inz]
+                    idx = np.nonzero(mask)[0][ok][inz]
                     best[idx] = np.minimum(best[idx], t[ok][inz])
-        # 树冠：竖直圆柱（2026-10-02 球→柱，见模块 docstring c 条与
-        # _crown_prim；球近似档 crown_shape="sphere" 仅回放旧钉）。
-        # 冠门（2026-10-02）：与 scene.raycast / collides_xy / world_builder
-        # 同口径——只画「物理存在」的冠（crown_collidable）。杨树档 10-02 晚
-        # 裁决「冠物理、视觉都删」后该键为 False ⇒ **冠不入画**（上半天「冠=
-        # 物理存在」档照画，10-01 去碰撞冠档亦不画）。
-        # 门保留为语义闸：非碰撞冠（若有）不入深度图，防「物理/点云/A* 都不
-        # 存在」的冠画进 DeFoP 监督器唯一感知源（幻影墙，W5 同型）。
-        # getattr 兜底程序化树（与 world_builder:176 同款）。
-        if (depth_cfg["render_crowns"] and r_crown > 0.0
-                and getattr(ob, "crown_collidable", True)):
-            if depth_cfg.get("crown_shape", "cylinder") == "sphere":
-                # 旧球近似（回放杠杆）：球心=(cx,cy,crown_z)、半径=
-                # max(crown_r, crown_h/2)——球底恰=包络底，冠底以下机高带
-                # 图上半宽归零（冠撞无信号病灶，见 docstring c 条）。
-                cctr = np.array([ob.cx, ob.cy, ob.crown_z])
-                mask = _sphere_mask(o, dsub, cctr, r_crown) if do_crown else _EMPTY_MASK
-                if mask.any():
-                    d = dsub[mask].astype(np.float64)
-                    u = o - cctr
-                    a = np.ones(d.shape[0])          # 单位射线
-                    b = 2.0 * (d @ u)
-                    c = float(u @ u) - r_crown ** 2
-                    ok, t = _solve_min_t(d, a, b, c, t_max)
-                    if ok.any():
-                        idx = _sub_idx(tsub, mask)[ok]
-                        best[idx] = np.minimum(best[idx], t[ok])
-            else:
-                # 圆柱侧面（同 geo.ray_cylinder）：外包球掩膜（r_bb 口径见
-                # _crown_prim）→ 二次方程两根全判——相机在柱面足迹内是常态
-                # （冠下穿行），此时近根在身后、远根=内壁命中，不许像树干
-                # _solve_min_t 那样丢远根 → 命中点 z 带过滤。
-                ccx, ccy, cr, cz0, cz1, cr_bb = _crown_prim(ob)
-                cctr = np.array([ccx, ccy, (cz0 + cz1) / 2.0])
-                mask = _sphere_mask(o, dsub, cctr, cr_bb) if do_crown else _EMPTY_MASK
-                if mask.any():
-                    d = dsub[mask].astype(np.float64)
-                    dxm = o[0] - ccx
-                    dym = o[1] - ccy
-                    a = d[:, 0] ** 2 + d[:, 1] ** 2
-                    b = 2.0 * (dxm * d[:, 0] + dym * d[:, 1])
-                    c = dxm * dxm + dym * dym - cr ** 2
-                    disc = b * b - 4.0 * a * c
-                    ok = (a > 1e-12) & (disc >= 0.0)
-                    if ok.any():
-                        sq = np.sqrt(np.where(ok, disc, 0.0))
-                        den = 2.0 * np.where(ok, a, 1.0)
-                        t1 = (-b - sq) / den
-                        t2 = (-b + sq) / den
-                        zh1 = o[2] + t1 * d[:, 2]
-                        zh2 = o[2] + t2 * d[:, 2]
-                        v1 = ok & (t1 > 1e-6) & (zh1 >= cz0) & (zh1 <= cz1)
-                        v2 = ok & (t2 > 1e-6) & (zh2 >= cz0) & (zh2 <= cz1)
-                        tsel = np.where(v1, t1, t2)   # t1<t2：v1 命中即取近
-                        vsel = (v1 | v2) & (tsel <= t_max)
-                        if vsel.any():
-                            idx = _sub_idx(tsub, mask)[vsel]
-                            best[idx] = np.minimum(best[idx], tsel[vsel])
+        # 树冠：球近似（球心/半径口径见模块 docstring c 条）
+        if depth_cfg["render_crowns"] and r_crown > 0.0:
+            cctr = np.array([ob.cx, ob.cy, ob.crown_z])
+            mask = _sphere_mask(o, dirs, cctr, r_crown)
+            if mask.any():
+                d = dirs[mask].astype(np.float64)
+                u = o - cctr
+                a = np.ones(d.shape[0])          # 单位射线
+                b = 2.0 * (d @ u)
+                c = float(u @ u) - r_crown ** 2
+                ok, t = _solve_min_t(d, a, b, c, t_max)
+                if ok.any():
+                    idx = np.nonzero(mask)[0][ok]
+                    best[idx] = np.minimum(best[idx], t[ok])
         # 树枝：世界系线段 → 有限圆柱（同 geo.ray_finite_cylinder 模型）
-        for (sx, sy, sz, ex, ey, ez, br) in brs_vis:
+        for (sx, sy, sz, ex, ey, ez, br) in brs:
             A = np.array([sx, sy, sz])
             B = np.array([ex, ey, ez])
             mvec = B - A
@@ -510,10 +270,10 @@ def render_depth(scene, pos, yaw, depth_cfg, rng, cam_dirs=None, inv_len=None,
                 continue
             mid = (A + B) / 2.0
             r_bb = math.sqrt(L2) / 2.0 + br
-            mask = _sphere_mask(o, dsub, mid, r_bb)
+            mask = _sphere_mask(o, dirs, mid, r_bb)
             if not mask.any():
                 continue
-            d = dsub[mask].astype(np.float64)
+            d = dirs[mask].astype(np.float64)
             wv = o - A
             dm = d @ mvec
             wm = float(wv @ mvec)
@@ -525,7 +285,7 @@ def render_depth(scene, pos, yaw, depth_cfg, rng, cam_dirs=None, inv_len=None,
                 s_ax = (t[ok] * dm[ok] + wm) / L2
                 inseg = (s_ax >= 0.0) & (s_ax <= 1.0)
                 if inseg.any():
-                    idx = _sub_idx(tsub, mask)[ok][inseg]
+                    idx = np.nonzero(mask)[0][ok][inseg]
                     best[idx] = np.minimum(best[idx], t[ok][inseg])
 
     # ---- e) 盒障碍 AABB（slab 法，向量化；render_boxes 门控，缺省关） ----
@@ -696,7 +456,13 @@ class DepthSimNode:
         info.width = self.cfg["width"]
         info.height = self.cfg["height"]
         info.distortion_model = "plumb_bob"
-        info.D = Float64MultiArray(data=[0.0] * 5)   # 大写：精简版消息无小写畸变字段
+        # 2026-10-07 修复：CameraInfo.D 是 float64[]，曾经被赋成 Float64MultiArray
+        # 消息对象 → 序列化时 genpy 抛 "field D must be a list or tuple type"。
+        # 失败点在 TCP 建连（_tcp_server_callback→add_connection→serialize），
+        # 即 camera_info 从未成功连上过任何订阅者（image_raw 是另一条连接，
+        # 不受影响，故症状是"图像正常但 K 无人收到"）。深度默认关时无人消费，
+        # 故潜伏至今。K/R/P 早已是 list，只有 D 错。
+        info.D = [0.0] * 5   # 大写：精简版消息无小写畸变字段
         info.K = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
         info.R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         info.P = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]

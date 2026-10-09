@@ -164,6 +164,14 @@ class WorldNode:
         # 子句会把着地机判成碰撞弹跳（run4 五机簇2 法证）。退赛监视
         # （rule_monitor）不受此豁免影响，仍按 z/pad/armed 独立判定。
         self._park_skip = bool(_rc.get("park_ground_skip", True))
+        # 地面子句埋入深度（2026-10-08 用户裁决「z=0.35 不算碰撞」）：判据改为
+        # 机心入地才判。法证依据——strict 档每局 1-2 起"z=0.35"碰撞，撞点全在
+        # x≈±27（离场段/pad 与 RECON 降平台段），机身半径恰好 0.35 ⇒ 球底刚贴地；
+        # 这些不是撞树也不是撞围栏，却各吃掉弹开 1.0s+冷却 2.0s 并计入碰撞分。
+        # ⚠ 不整段删地面子句：它同时兜底 run4/5 定谳的"沉入地下"（d1 沉至
+        # z=-3.56），全删则垂直律击穿时无告警。弹开方向采样
+        # （_safe_bounce_dir.blocked）不传该参 ⇒ 几何层逐位不变。
+        self._ground_depth = float(_rc.get("ground_depth", 0.0))
         # 低空弹开钳位（low_bounce_up）：z<1.0 时弹开方向垂直分量一律向上——
         # 爬升中被撞（rev 含向下分量）会把机压进地面（run6 法证二次触地
         # z=0.01 级联）；互撞弹开本就水平，不受影响
@@ -327,7 +335,8 @@ class WorldNode:
             skip_g = self.landing_armed.get(i, False)
             if self._park_skip and self._ever_armed.get(i, False):
                 skip_g = True  # 停机豁免：计划着地机贴地不判碰撞
-            if self.scene.collides(p, skip_ground=skip_g):
+            if self.scene.collides(p, skip_ground=skip_g,
+                                   ground_depth=self._ground_depth):
                 d.collided = True
                 self.pub_collision[i].publish(Bool(data=True))
                 if not d._collide_logged:

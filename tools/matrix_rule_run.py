@@ -21,7 +21,7 @@ import time
 
 import yaml
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 sys.path.insert(0, os.path.join(WS, "tools"))
 from matrix_run import CFG, WS as _WS, parse_metrics, set_top  # noqa: E402
 

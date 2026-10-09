@@ -3,7 +3,7 @@
 # 起栈（python 后端）→ 挂监测器（--noline --record）→ 开赛 → 等 DONE →
 # 采样面板/存证 → 拆栈。全程镜像 run_verify.sh 的起止纪律。
 set -x
-cd /home/ubuntu/zx2026_defop_ws
+cd /home/ubuntu/zx2026_arena_ws
 source /opt/ros/noetic/setup.bash
 source devel/setup.bash
 export ROS_MASTER_URI=http://127.0.0.1:11411

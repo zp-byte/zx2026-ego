@@ -36,7 +36,7 @@ for ev in events:
     dedup.append(ev)
 events = dedup
 
-sys.path.insert(0, '/home/ubuntu/zx2026_defop_ws/src/zx2026_common/scripts')
+sys.path.insert(0, '/home/ubuntu/zx2026_arena_ws/src/zx2026_common/scripts')
 from zx2026_common.scene import Scene
 sc = Scene()
 trees = [(ob.id, ob.cx, ob.cy, ob.trunk_r) for ob in sc.obstacles if ob.kind == 'tree' and ob.cx is not None]

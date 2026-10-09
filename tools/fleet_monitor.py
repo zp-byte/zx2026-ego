@@ -22,7 +22,7 @@
                                             碰撞坐标/重试 —— 这些只落日志）
 
 用法（另开一个 WSL 终端，或 tmux 里）:
-  source /opt/ros/noetic/setup.bash && source ~/zx2026_defop_ws/devel/setup.bash
+  source /opt/ros/noetic/setup.bash && source ~/zx2026_arena_ws/devel/setup.bash
   python3 tools/fleet_monitor.py                     # 实时面板（ANSI 刷屏）
   python3 tools/fleet_monitor.py --noline            # 不清屏，适合 tee 进文件
   python3 tools/fleet_monitor.py --once              # 单帧快照后退出（脚本用）

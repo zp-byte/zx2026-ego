@@ -24,7 +24,7 @@ import sys
 import numpy as np
 import cv2
 
-_WS = "/home/ubuntu/zx2026_defop_ws"
+_WS = "/home/ubuntu/zx2026_ego_ws"
 if os.path.join(_WS, "src/arena_world_gazebo/scripts") not in sys.path:
     sys.path.insert(0, os.path.join(_WS, "src/arena_world_gazebo/scripts"))
 from world_builder import PLATFORM_COLORS  # noqa: E402  色板唯一权威（RGB 0-1）
@@ -116,10 +116,7 @@ def _occluders(scene, render_crowns):
             top = _circle_pts(ob.cx, ob.cy, gz + ob.trunk_h, ob.trunk_r, n)
             pts = np.concatenate([ring, top], axis=0)
             yield pts, TRUNK_COLOR
-            # 冠门（2026-10-02 晚）：与 depth_sim/scene/world_builder/判官同口径，
-            # 只画「物理存在」的冠。杨树档 crown_collidable=false（冠物理、视觉
-            # 双删）⇒ 此处不再吐冠遮挡面。键缺省 True 保老表逐位旧行为。
-            if render_crowns and ob.crown_r and getattr(ob, "crown_collidable", True):
+            if render_crowns and ob.crown_r:
                 yield _circle_pts(ob.cx, ob.cy, ob.crown_z, ob.crown_r, 20), CROWN_COLOR
         else:
             lo, hi = ob.lo, ob.hi

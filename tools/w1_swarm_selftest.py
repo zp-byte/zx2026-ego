@@ -12,7 +12,7 @@
 无 ROS 运行时：importlib 加载模块 + MethodType 绑定（沿用 avoid_selftest
 范式）；rospy 以 SimpleNamespace 桩替换（get_time 可调钟）。模块本体
 import rospy，故仍需 source devel 环境（但不需要 roscore）。
-运行: source /opt/ros/noetic/setup.bash && source ~/zx2026_defop_ws/devel/setup.bash \
+运行: source /opt/ros/noetic/setup.bash && source ~/zx2026_arena_ws/devel/setup.bash \
       && python3 tools/w1_swarm_selftest.py
 """
 import importlib.util
@@ -22,7 +22,7 @@ import types
 
 import numpy as np
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 NAV = os.path.join(WS, "src/arena_nav/scripts/nav_node.py")
 BASE = os.path.join(WS, "tools/w0_baseline_nav_node.py")
 
@@ -248,13 +248,16 @@ ok(np.array_equal(a._apply_swarm(np.array([1.0, 0.0, 0.0])),
 
 # C1 闭合速度遥测
 st = make_state(NAV_NEW, v_odom=(0.3, 0.4, 0.0), cloud=[(1.0, 0.0, 2.5)])
-vc, cl = st._closing_speed()
+vc, cl, _u = st._closing_speed()
 ok(abs(vc - 0.3) < 1e-12 and abs(cl - 1.0) < 1e-12, "C1 close/clr: %s %s" % (vc, cl))
+# C1b 第三返回值=接触法向 u（起 2 用它定位"刚撞上的障碍点"）
+ok(_u is not None and abs(_u[0] - 1.0) < 1e-12 and abs(_u[2]) < 1e-12,
+   "C1b contact normal: %s" % (_u,))
 st = make_state(NAV_NEW, v_odom=(-0.5, 0.0, 0.0), cloud=[(1.0, 0.0, 2.5)])
-vc, cl = st._closing_speed()
+vc, cl, _u = st._closing_speed()
 ok(vc < -0.49, "C2 receding negative: %s" % vc)
 st = make_state(NAV_NEW, cloud=[])
-vc, cl = st._closing_speed()
+vc, cl, _u = st._closing_speed()
 ok(vc == 0.0 and cl == 1e9, "C3 empty cloud: %s %s" % (vc, cl))
 
 # SEP-NEUTRAL：分离路径 tag 默认 "sep" 计数正确（sep_obs_guard 原语义未变）。

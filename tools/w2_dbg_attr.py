@@ -5,10 +5,10 @@ import os
 import re
 import sys
 
-sys.path.insert(0, "/home/ubuntu/zx2026_defop_ws/tools")
+sys.path.insert(0, "/home/ubuntu/zx2026_arena_ws/tools")
 import w2_phase_attr as W  # noqa: E402
 
-md = sorted(glob.glob("/home/ubuntu/zx2026_defop_ws/run_logs/matrix_w1_*"),
+md = sorted(glob.glob("/home/ubuntu/zx2026_arena_ws/run_logs/matrix_w1_*"),
             key=os.path.getmtime)
 print("matrix dirs:", [os.path.basename(m) for m in md])
 for m in md:

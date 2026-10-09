@@ -18,7 +18,7 @@ noO5 臂随之移除。
   noO3  ca_react_extra=0 + ca_height_extra=0 → 反应半径/高度门回基线
   noO4  uncertain.enabled=false → 隔离 O4 限速
 
-用法: python3 ~/zx2026_defop_ws/tools/matrix_branch_iso.py
+用法: python3 ~/zx2026_arena_ws/tools/matrix_branch_iso.py
 """
 import glob
 import os

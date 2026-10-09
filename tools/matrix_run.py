@@ -17,7 +17,7 @@ run_logs/matrix_<ts>/<tag>_seed<seed>/ → 追加 matrix_results.csv。
 （B43p3、p4-O45/O42 法证定论：满窗口慢 FAIL 全是睡眠烧掉墙钟窗口所致，
 导航策略无缺陷），现场留档 <outdir>__contaminated 并自动重跑一次。
 
-用法: python3 ~/zx2026_defop_ws/tools/matrix_run.py
+用法: python3 ~/zx2026_arena_ws/tools/matrix_run.py
 """
 import glob
 import os
@@ -28,7 +28,7 @@ import time
 
 import yaml
 
-WS = os.path.expanduser("~/zx2026_defop_ws")
+WS = os.path.expanduser("~/zx2026_arena_ws")
 
 
 def _time_limit_s():

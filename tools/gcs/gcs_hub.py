@@ -734,7 +734,7 @@ def main():
     ap.add_argument("--stall-vel", type=float, default=0.05)
     ap.add_argument("--stall-s", type=float, default=5.0)
     ap.add_argument("--plan-dead", type=float, default=5.0)
-    ap.add_argument("--logdir", default="/home/ubuntu/zx2026_defop_ws/run_logs")
+    ap.add_argument("--logdir", default="/home/ubuntu/zx2026_arena_ws/run_logs")
     ap.add_argument("--status-file", default=None,
                     help="1Hz 快照 JSON（默认 <logdir>/gcs_status.json）")
     ap.add_argument("--bat-min", type=float, default=None,

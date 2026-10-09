@@ -5,7 +5,7 @@
 export ROS_MASTER_URI=http://127.0.0.1:11411
 export ROS_HOSTNAME=127.0.0.1
 source /opt/ros/noetic/setup.bash
-source /home/ubuntu/zx2026_defop_ws/devel/setup.bash
+source /home/ubuntu/zx2026_arena_ws/devel/setup.bash
 export DISPLAY=:0
 export LIBGL_ALWAYS_SOFTWARE=1
 export QT_X11_FORCE_SOFTWARE_GL=1
@@ -15,7 +15,7 @@ export OGRE_RTT_MODE=Copy
 export GAZEBO_MODEL_PATH=/opt/ros/noetic/share/gazebo-11/models
 
 # 9P/UNC 编辑会清掉 .py 可执行位 → nav_node 等起不来；启动前统一恢复
-find /home/ubuntu/zx2026_defop_ws/src -name '*.py' -exec chmod +x {} + 2>/dev/null
+find /home/ubuntu/zx2026_arena_ws/src -name '*.py' -exec chmod +x {} + 2>/dev/null
 
 pkill -f "rosmaster.*11411" 2>/dev/null; pkill -f gzserver 2>/dev/null; pkill -f gzclient 2>/dev/null; pkill -f rviz 2>/dev/null; sleep 2
 # setsid 脱离调用进程组，保证工具调用结束后仿真继续运行

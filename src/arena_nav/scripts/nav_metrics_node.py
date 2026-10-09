@@ -41,7 +41,7 @@ class NavMetrics(object):
         self._final_written = False
         self._last_snap = 0.0
 
-        logdir = os.path.expanduser("~/zx2026_defop_ws/run_logs")
+        logdir = os.path.expanduser("~/zx2026_ego_ws/run_logs")
         os.makedirs(logdir, exist_ok=True)
         self.ts = time.strftime("%Y%m%d_%H%M%S")
         self.yaml_path = os.path.join(logdir, "nav_metrics_%s.yaml" % self.ts)

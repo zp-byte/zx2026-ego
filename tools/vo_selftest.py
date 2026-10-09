@@ -3,7 +3,7 @@
 """W6 VO-lite 机间避撞 —— 离线数学自测（不依赖 ROS 运行栈，只需可 import）。
 
 用法（WSL）：
-  cd ~/zx2026_defop_ws && source /opt/ros/noetic/setup.bash \
+  cd ~/zx2026_arena_ws && source /opt/ros/noetic/setup.bash \
     && source devel/setup.bash && python3 tools/vo_selftest.py
 
 覆盖四层：

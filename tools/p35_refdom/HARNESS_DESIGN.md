@@ -5,7 +5,7 @@
 
 路径约定（下文引用简写）：
 - `UP` = `~/DeFoP`（上游原仓，权重/评测原链所在地）
-- `AR` = `~/zx2026_defop_ws`（arena 工作区；vendored 链 `AR/src/defop_nav`，本 harness 一切文件 `AR/tools/p35_refdom/`）
+- `AR` = `~/zx2026_arena_ws`（arena 工作区；vendored 链 `AR/src/defop_nav`，本 harness 一切文件 `AR/tools/p35_refdom/`）
 
 ---
 
@@ -165,10 +165,10 @@
 
 ## 4. 目录约定
 
-全部文件在 `~/zx2026_defop_ws/tools/p35_refdom/`（**不进 defop_ws**——那边在 catkin build，drop-in 会污染构建；本 harness 无编译件，纯 python/launch/sh）。launch 内包引用用 `$(find rmf_sim)`，在 `source defop_ws/devel/setup.bash` 后可解析（runner preflight 先 `rospack find rmf_sim` 与 `rospack find lmf_planner_srvs_msgs` 验一下，缺了再补 source）。
+全部文件在 `~/zx2026_arena_ws/tools/p35_refdom/`（**不进 defop_ws**——那边在 catkin build，drop-in 会污染构建；本 harness 无编译件，纯 python/launch/sh）。launch 内包引用用 `$(find rmf_sim)`，在 `source defop_ws/devel/setup.bash` 后可解析（runner preflight 先 `rospack find rmf_sim` 与 `rospack find lmf_planner_srvs_msgs` 验一下，缺了再补 source）。
 
 ```
-~/zx2026_defop_ws/tools/p35_refdom/
+~/zx2026_arena_ws/tools/p35_refdom/
 ├── HARNESS_DESIGN.md            # 本文档
 ├── shims/
 │   ├── p35_odom_bridge.py       # 表#2（twist_in: body|world 参数化）
