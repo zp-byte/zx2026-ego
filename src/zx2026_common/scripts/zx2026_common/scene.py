@@ -4,7 +4,6 @@
 无 ROS 依赖（除配置文件路径），供 arena_world / arena_sensor / arena_nav /
 arena_mission 共用同一份场景权威数据。
 """
-import json
 import math
 import os
 import random
@@ -21,33 +20,15 @@ from zx2026_common import geometry as geo
 class Obstacle:
     """轴对齐盒障碍（立木/灌木/路缘/围栏/标识柱的包围盒）。
 
-    kind=="tree" 额外携带「圆柱树干 + 冠包络」几何（lo/hi 保留作 AABB 兜底，
-    供其余 kind 使用）。
-
-    冠的地位（2026-10-01 云杉林换场景）：
-      树干与冠**_都**参与硬碰撞 / lidar / A* 占用。此前冠仅视觉，是因为
-      杨树冠底 ≥2.81 恒在巡航带 (≤2.60) 之上，判定永远不触发；云杉冠底
-      中位 1.22 正压巡航线，若冠不入感知层，nav 会把路径规划进冠里而物理
-      挡住、判官又不报——即"贴隐形物"活锁。故四处（collides / collides_xy /
-      raycast / collision monitor）统一按 `_crown_z_range` 判定。
-    旧场景兼容：crown_h=None 时按球冠语义（球心 crown_z、半径 crown_r）。
-
-    `crown_collidable`（表级 meta，默认 True）：
-      杨树档 2026-10-02 晚用户裁决「冠物理、视觉都删掉，只保留树枝」= **False**
-      （沿革：10-01 只去碰撞冠 → 10-02 上半天「冠=物理存在」→ 当晚双删）。
-      置 False 时 `_crown_z_range` 返回 None，于是 collides / collides_xy /
-      raycast / 判官 `_crown_hit` / nav `_obstacle_nearest` 与越顶判据**同时**
-      看不见冠（一个杠杆，四层一致）；world_builder 侧同键不发 c_crown 且不拼
-      v_leaf，depth_sim / camera_render 同键不入画。这让「物理不挡、判官却报」
-      这类静默失配在结构上不可能发生。
-      注：置 True 只恢复**物理**冠包络，**不**恢复冠视觉（视觉 mesh 已在
-      world_builder 源码中删除，回滚须恢复那两行，见该函数 docstring）。
+    kind=="tree" 额外携带「圆柱树干 + 球冠」几何（lo/hi 保留作 AABB 兜底，
+    供其余 kind 使用）。树干为硬碰撞体并参与 lidar / A* 占用；球冠仅视觉
+    （rviz / gazebo），不参与碰撞、lidar 或占用。
     """
 
     __slots__ = ("lo", "hi", "kind", "id",
                  "cx", "cy", "trunk_r", "trunk_h", "crown_r", "crown_z",
-                 "crown_h", "crown_collidable", "branches",
-                 "mesh_variant", "mesh_scale", "mesh_yaw", "mesh_kind")
+                 "crown_h", "branches",
+                 "mesh_variant", "mesh_scale", "mesh_yaw")
 
     def __init__(self, lo, hi, kind="tree", oid=0):
         self.lo = lo
@@ -62,14 +43,11 @@ class Obstacle:
         self.crown_r = None
         self.crown_z = None
         self.crown_h = None  # 冠包络高度（table 场景用；None=按球冠旧语义）
-        self.crown_collidable = True  # 表级 meta；False=冠不存在（物理+视觉双删，四层同时失效）
         self.branches = None  # 细枝列表 [(sx,sy,sz,ex,ey,ez,r),...]，真机场景建模
-        # mesh 视觉元数据（table 场景；world_builder 消费，None=旧圆柱树）
+        # 杨树林 mesh 视觉元数据（table 场景；world_builder 消费，None=旧圆柱树）
         self.mesh_variant = None
         self.mesh_scale = None
         self.mesh_yaw = None
-        # 表级 mesh 种类（"poplar"/"spruce"/None）→ world_builder 选发射路径与 mesh 目录
-        self.mesh_kind = None
 
 
 class Zone:
@@ -181,73 +159,12 @@ class Scene:
         return 42
 
     def _load_tree_table(self, rel):
-        """加载显式树表（相对 config 目录或绝对路径）。
-
-        返回 (rows, meta)。meta 携带表级元数据（当前用 mesh_kind 决定
-        world_builder 走哪条视觉发射路径）。旧表无 meta 时返回 {}，与
-        改动前逐位一致。
-        """
+        """加载显式树表（相对 config 目录或绝对路径）。"""
         path = rel if os.path.isabs(rel) else os.path.join(
             cfg.pkg_config_dir(), rel)
         with open(path, "r", encoding="utf-8") as fp:
             data = yaml.safe_load(fp)
-        return data.get("trees", []), (data.get("meta") or {})
-
-    def _load_branch_template(self, rel):
-        """加载真枝模板（表 meta.branch_file，与树表同目录同解析惯例）。
-
-        返回 {variant: [[x0,y0,z0, x1,y1,z1, r], ...]}；rel 为空/文件缺失
-        返回 None —— 调用方据此不实例化枝（宁可无枝，也不要悬空引用）。
-
-        模板坐标是**模型局部系**（原点在干基、z=0 在地面），与 wood/leaves
-        mesh 同一坐标系（由 tools/extract_poplar_branches.py 重放网格生成器
-        得到）。实例化见 `_attach_real_branches`。
-        """
-        if not rel:
-            return None
-        path = rel if os.path.isabs(rel) else os.path.join(
-            cfg.pkg_config_dir(), rel)
-        if not os.path.exists(path):
-            return None
-        with open(path, "r", encoding="utf-8") as fp:
-            doc = json.load(fp)
-        out = {}
-        for name, v in doc.items():
-            if not name.startswith("tree_"):
-                continue
-            out[int(name.split("_")[1])] = v.get("branches", [])
-        return out or None
-
-    def _attach_real_branches(self, ob, tpl):
-        """把真枝模板实例化到世界系，写进 ob.branches。
-
-        变换口径（与 world_builder.tree_model_poplar 逐字一致）：
-          · 模型**无模型级 scale**；视觉 mesh 靠 `<scale>s</scale>` 缩放 ⇒
-            link 系坐标 = 局部坐标 × s（碰撞体 c_trunk 也写在 link 系，同例）
-          · 模型 pose = `cx cy 0 0 0 yaw` ⇒ 世界 = R(yaw)·(s·p) + (cx, cy, gz)
-        故枝与视觉枝、与 c_trunk 天然共用一个变换，不会各说各话。
-        """
-        if not tpl:
-            return
-        try:                       # 表里 variant 若被写成字符串也会命中（否则静默无枝）
-            segs = tpl.get(int(ob.mesh_variant))
-        except (TypeError, ValueError):
-            return
-        if not segs:
-            return
-        s = float(ob.mesh_scale or 1.0)
-        th = float(ob.mesh_yaw or 0.0)
-        ct, st = math.cos(th), math.sin(th)
-        gz = self.venue["ground_z"]
-
-        def w(p):
-            px, py, pz = p[0] * s, p[1] * s, p[2] * s
-            return (ob.cx + ct * px - st * py,
-                    ob.cy + st * px + ct * py,
-                    gz + pz)
-
-        ob.branches = [w(seg[0:3]) + w(seg[3:6]) + (seg[6] * s,)
-                       for seg in segs]
+        return data.get("trees", [])
 
     def _make_pads(self, zone):
         n = int(zone["pads"])
@@ -275,6 +192,7 @@ class Scene:
         generator = f.get("generator", "procedural")
         oid = 0
         clear_r = float(f.get("drop_clearance", 1.5))
+        bx_max = f.get("belt_x_max")   # 林带东切线（None=不切）；2026-10-08 投放区东侧段伐树
         dps = [(d.xyz[0], d.xyz[1]) for d in self.drop_points]
 
         def near_drop(x, y):
@@ -335,16 +253,12 @@ class Scene:
             # 外部场景转换（tools/import_poplar_sdf.py），不消耗森林 rng 流
             # ——确定性天然成立，run_seed/density_seed 不再影响布局。
             # 转换时已保证平台/起降净空，near_drop 仅作防御性兜底。
-            rows, tmeta = self._load_tree_table(f.get("table_file", ""))
-            mesh_kind = tmeta.get("mesh_kind")
-            # 冠是否入碰撞（表级 meta；老表无键=True=逐位旧行为）
-            crown_col = bool(tmeta.get("crown_collidable", True))
-            # 真枝模板（表级 meta；无此键或文件缺失=不实例化，ob.branches 保持
-            # _decorate_tree 的结果=默认 None）
-            tpl = self._load_branch_template(tmeta.get("branch_file"))
+            rows = self._load_tree_table(f.get("table_file", ""))
             gz = self.venue["ground_z"]
             for row in rows:
                 bx, by = float(row["x"]), float(row["y"])
+                if bx_max is not None and bx > float(bx_max):
+                    continue   # 林带东切（belt_x_max）
                 if near_drop(bx, by):
                     continue
                 r = float(row["trunk_r"])
@@ -362,16 +276,10 @@ class Scene:
                               else gz + h)
                 ob.crown_h = (float(row["crown_h"]) if row.get("crown_h") is not None
                               else None)
-                ob.crown_collidable = crown_col
                 ob.mesh_variant = row.get("variant")
                 ob.mesh_scale = row.get("scale")
                 ob.mesh_yaw = row.get("yaw", 0.0)
-                ob.mesh_kind = mesh_kind
                 self._decorate_tree(ob)
-                # 真枝覆盖程序化细枝：真枝来自网格生成器（与视觉 mesh 同源），
-                # 程序化细枝（sim_settings.branches，默认关）是旧的凭空建模。
-                # 表 meta 挂了 branch_file 时以真枝为准。
-                self._attach_real_branches(ob, tpl)
                 self.obstacles.append(ob)
                 oid += 1
             return
@@ -389,6 +297,8 @@ class Scene:
             if not transit.contains_2d((x, y)):
                 continue
             if near_drop(x, y):
+                continue
+            if bx_max is not None and x > float(bx_max):
                 continue
             r = self.rng.uniform(*f["trunk_r"])
             h = self.rng.uniform(*f["tree_h"])
@@ -412,6 +322,8 @@ class Scene:
             if not transit.contains_2d((x, y)):
                 continue
             if near_drop(x, y):
+                continue
+            if bx_max is not None and x > float(bx_max):
                 continue
             w = self.rng.uniform(0.3, 0.6)
             h = self.rng.uniform(*f["bush_h"])
@@ -506,22 +418,29 @@ class Scene:
         cy = sum(p[1] for p in poly) / n
         return (cx, cy)
 
-    def collides(self, pos, radius=None, skip_ground=False):
+    def collides(self, pos, radius=None, skip_ground=False, ground_depth=0.0):
         """球(pos, radius) 与任一障碍或地面碰撞。
 
         skip_ground=True 跳过地面子句（真落地 touchdown 用：landing_armed
         门控下的最后下降段；树/围栏/机间碰撞照查——armed 漏关放过不了
-        贴树碰撞）。"""
+        贴树碰撞）。
+
+        ground_depth：地面子句要求球"埋入"的深度(m)，判据
+        `pos[2] - radius + ground_depth < ground_z`。
+          0.0（默认）= 球底触地即判 —— 历史行为，逐位不变
+          0.35        = 机心入地才判 —— 2026-10-08 用户裁决
+                        「z=0.35 不算碰撞」（机身在 0.35 处恰好是半径高，
+                        即球底刚好贴地）
+        ⚠ 默认 0.0 保证只有显式传参的调用点受影响；`_safe_bounce_dir`
+        的方向采样不传本参 ⇒ 弹开候选仍按"触地即挡"否决，弹向不指地下。"""
         radius = radius if radius is not None else self.drone_radius
         gz = self.venue["ground_z"]
-        if not skip_ground and pos[2] - radius < gz:
+        if not skip_ground and pos[2] - radius + ground_depth < gz:
             return True
         for ob in self.obstacles:
             if ob.kind == "tree":
-                # 树干 + 冠包络：球 vs 竖直圆柱（两者都是硬碰撞体）
+                # 树干：球 vs 竖直圆柱；球冠不参与硬碰撞
                 if self._collides_trunk(pos, radius, ob):
-                    return True
-                if self._collides_crown(pos, radius, ob):
                     return True
                 if ob.branches:
                     # 细枝：球 vs 线段圆柱（真机场景；默认无枝不生效）
@@ -545,38 +464,6 @@ class Scene:
         gz = self.venue["ground_z"]
         return pos[2] + radius >= gz and pos[2] - radius <= gz + ob.trunk_h
 
-    def _crown_z_range(self, ob):
-        """冠包络的竖直跨度 (z_lo, z_hi)（世界系）。无冠返回 None。
-
-        crown_z 两种来源都已是世界绝对高度：table 场景由导入器写入，
-        旧程序化场景写作 gz+h。故此处不做任何基准变换。
-        crown_h 给包络高（云杉/杨树 table 场景）；crown_h=None 时按球冠语义
-        ——球心 crown_z、半径 crown_r，求交按竖圆柱（与 geo.ray_cylinder /
-        depth_sim_node 冠渲染自此同款，2026-10-02 球→柱修复）。
-
-        `crown_collidable=False`（杨树档 2026-10-02 晚起为 False「冠物理、视觉
-        双删」；键保留为回滚/换场杠杆）时返回 None：一个杠杆同时关掉 collides /
-        collides_xy / raycast / 判官 / nav 五处的冠判定，四层不会出现"物理不挡、
-        判官却报"的失配。
-        """
-        if not ob.crown_collidable:
-            return None
-        if ob.crown_r is None or ob.crown_z is None:
-            return None
-        zc = ob.crown_z
-        if ob.crown_h:
-            return (zc - ob.crown_h / 2.0, zc + ob.crown_h / 2.0)
-        return (zc - ob.crown_r, zc + ob.crown_r)
-
-    def _collides_crown(self, pos, radius, ob):
-        """球(pos, radius) 是否与树冠包络圆柱相交（= gz 侧 c_crown 的同几何）。"""
-        zr = self._crown_z_range(ob)
-        if zr is None:
-            return False
-        if geo.dist_xy(pos, (ob.cx, ob.cy)) > ob.crown_r + radius:
-            return False
-        return pos[2] + radius >= zr[0] and pos[2] - radius <= zr[1]
-
     def collides_xy(self, x, y, z_lo, z_hi, pad=0.0):
         """2D 单元(x,y) 在 z 带 [z_lo,z_hi] 内是否有障碍（A* 占用用）。"""
         for ob in self.obstacles:
@@ -586,13 +473,9 @@ class Scene:
             if ob.kind == "tree":
                 gz = self.venue["ground_z"]
                 dxy = geo.dist_xy((x, y), (ob.cx, ob.cy))
-                # 树干圆盘 + 冠包络圆盘（各按自身 z 带与查询带重叠与否判定）
+                # 树干圆盘（球冠仅视觉，不参与占用）
                 if not (gz + ob.trunk_h < z_lo or gz > z_hi):
                     if dxy <= ob.trunk_r + pad:
-                        return True
-                zr = self._crown_z_range(ob)
-                if zr is not None and not (zr[1] < z_lo or zr[0] > z_hi):
-                    if dxy <= ob.crown_r + pad:
                         return True
                 if ob.branches:
                     # 细枝：z 带重叠 + 2D 线段距离（真机场景；默认无枝不生效）
@@ -621,21 +504,13 @@ class Scene:
                 best = t
         for ob in self.obstacles:
             if ob.kind == "tree":
-                # 树干圆柱 + 冠包络圆柱（冠已是真障碍，lidar 须反射枝叶；
-                # 与 depth_sim_node 的冠渲染自此对同一片林子口径一致）
+                # 树干圆柱（球冠仅视觉，lidar 不反射枝叶）
                 gz = self.venue["ground_z"]
                 t = geo.ray_cylinder(origin, direction, (ob.cx, ob.cy),
                                      ob.trunk_r, gz, gz + ob.trunk_h)
                 if t is not None and 0 <= t <= max_t:
                     if best is None or t < best:
                         best = t
-                zr = self._crown_z_range(ob)
-                if zr is not None:
-                    t = geo.ray_cylinder(origin, direction, (ob.cx, ob.cy),
-                                         ob.crown_r, zr[0], zr[1])
-                    if t is not None and 0 <= t <= max_t:
-                        if best is None or t < best:
-                            best = t
                 if ob.branches:
                     # 细枝：有限圆柱，取最近（真机场景；默认无枝不生效）
                     for (sx, sy, sz, ex, ey, ez, br) in ob.branches:
