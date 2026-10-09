@@ -33,6 +33,9 @@ odom_enu（ENU 位姿）配点云建图，点云必须同帧，否则建图整�
 topic 名现场可改：--src /cloud_registered（faster_lio 默认名；profile
 grid_cloud TODO 现场定谳后同步 profile_real_lio.yaml）。
 自检：python3 cloud_adapter.py --selftest（无 ROS 可跑，逻辑 8 检）
+D435 真机档（2026-10-09）：--frame camera 先把相机系云重投影到 LIO
+world（cam_to_world 纯函数：光学系→机体系基矩阵+安装俯仰/平移+odom
+四元数），再走同一四道滤；NaN/inf 无效像素在滤内防毒跳过。
 """
 import argparse
 import math
@@ -58,6 +61,9 @@ class CloudFilter(object):
         vox = {}
         r2 = self.range * self.range
         for (x, y, z) in pts:
+            if not (math.isfinite(x) and math.isfinite(y)
+                    and math.isfinite(z)):
+                continue   # D435 无效像素 NaN/inf（is_dense=false）防毒
             dz = z - odom[2]
             if dz < self.z_min_rel or dz > self.z_max_rel:   # 地面/头顶
                 continue
@@ -113,7 +119,66 @@ def selftest():
     chk("cap", len(r) <= 1200, True)
     # 空输入
     chk("empty", f.filter([], o), [])
+    # 相机系重投影（D435 真机档，2026-10-09）
+    b0 = _cam_basis(0.0)
+    chk("opt2body-fwd", b0[2], (1.0, 0.0, 0.0))
+    chk("opt2body-right", b0[0], (0.0, -1.0, 0.0))
+    chk("opt2body-down", b0[1], (0.0, 0.0, -1.0))
+    b30 = _cam_basis(30.0)
+    chk("tilt30-fwd", (round(b30[2][0], 3), round(b30[2][2], 3)),
+        (round(math.cos(math.radians(30)), 3),
+         round(-math.sin(math.radians(30)), 3)))
+    pw = cam_to_world([(0.0, 0.0, 1.0)], (1.0, 0.0, 0.0, 0.0),
+                      (10.0, 20.0, 1.5), 0.0, (0.0, 0.0, 0.0))
+    chk("cam2world-id", (round(pw[0][0], 3), round(pw[0][1], 3),
+                         round(pw[0][2], 3)), (11.0, 20.0, 1.5))
+    q90 = (math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4))
+    pw2 = cam_to_world([(0.0, 0.0, 1.0)], q90, (0.0, 0.0, 1.0), 0.0,
+                       (0.0, 0.0, 0.0))
+    chk("cam2world-yaw90", (round(pw2[0][0], 2), round(pw2[0][1], 2)),
+        (0.0, 1.0))
+    rn = f.filter([(float("nan"), 0.0, 1.0), (1.0, 0.0, 1.0)], o)
+    chk("nan-guard", len(rn), 1)
     print("selftest OK (%d checks)" % ok[0])
+
+
+# ------------------------------------------------------- 相机系重投影 --
+def _cam_basis(tilt_deg):
+    """相机光学系(x右,y下,z前)→机体系 基（返回三列向量的元组）。
+
+    列1=cam x(右)→机体 (0,-1,0)；列2=cam y(下)→机体 (0,0,-1)(tilt=0)；
+    列3=cam z(前)→机体 (cos t,0,-sin t)（下俯 t 度）。"""
+    t = math.radians(tilt_deg)
+    ct, st = math.cos(t), math.sin(t)
+    return ((0.0, -1.0, 0.0), (-st, 0.0, -ct), (ct, 0.0, -st))
+
+
+def quat_rot(q, v):
+    """四元数 (w,x,y,z) 旋转向量 v（ROS 排布）。"""
+    w, x, y, z = q
+    ux = 2.0 * (y * v[2] - z * v[1])
+    uy = 2.0 * (z * v[0] - x * v[2])
+    uz = 2.0 * (x * v[1] - y * v[0])
+    return (v[0] + w * ux + (y * uz - z * uy),
+            v[1] + w * uy + (z * ux - x * uz),
+            v[2] + w * uz + (x * uy - y * ux))
+
+
+def cam_to_world(pts, q, pos, tilt_deg, mount):
+    """相机系点列 → LIO world 系：R_odom·(M·p_cam + mount) + pos。
+
+    q=odom 四元数(w,x,y,z)（LIO world 重力对齐，pitch/roll 有效）；
+    mount=(dx,dy,dz) 相机在机体系安装平移 (m)。"""
+    cx, cy, cz = _cam_basis(tilt_deg)
+    mx, my, mz = mount
+    out = []
+    for (x, y, z) in pts:
+        bx = cx[0] * x + cy[0] * y + cz[0] * z + mx
+        by = cx[1] * x + cy[1] * y + cz[1] * z + my
+        bz = cx[2] * x + cy[2] * y + cz[2] * z + mz
+        r = quat_rot(q, (bx, by, bz))
+        out.append((r[0] + pos[0], r[1] + pos[1], r[2] + pos[2]))
+    return out
 
 
 # ------------------------------------------------------------------ ROS --
@@ -142,6 +207,15 @@ def main():
     ap.add_argument("--ex0", type=float, default=0.0)
     ap.add_argument("--ny0", type=float, default=0.0)
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--frame", choices=("world", "camera"), default="world",
+                    help="输入点云帧：world=LIO 配准云（原行为）；camera=相机系"
+                         "云（D435 points，先重投影到 LIO world 再滤）")
+    ap.add_argument("--cam-tilt-deg", type=float, default=0.0,
+                    help="相机安装下俯角（度，下俯为正）——frame=camera 时用")
+    ap.add_argument("--cam-dx", type=float, default=0.0)
+    ap.add_argument("--cam-dy", type=float, default=0.0)
+    ap.add_argument("--cam-dz", type=float, default=0.0,
+                    help="相机在机体系安装平移 (m)——frame=camera 时用")
     args = ap.parse_args()
     if args.selftest:
         selftest()
@@ -165,7 +239,9 @@ def main():
 
     def on_odom(m):
         p = m.pose.pose.position
+        q = m.pose.pose.orientation
         st["odom"] = (p.x, p.y, p.z)
+        st["q"] = (q.w, q.x, q.y, q.z)
         st["t_odom"] = rospy.get_rostime().to_sec()
 
     rospy.Subscriber(args.src, PointCloud2, on_pc, queue_size=2)
@@ -184,7 +260,12 @@ def main():
         m = st["pc"]
         if m is None or now - st["t_pc"] > 1.0:
             return
-        pts = flt.filter(parse_xyz(m), st["odom"])
+        pts = parse_xyz(m)
+        if args.frame == "camera":
+            pts = cam_to_world(pts, st.get("q", (1.0, 0.0, 0.0, 0.0)),
+                               st["odom"], args.cam_tilt_deg,
+                               (args.cam_dx, args.cam_dy, args.cam_dz))
+        pts = flt.filter(pts, st["odom"])
         if tf_on:
             # LIO 局部系→ENU（nav 的 odom_enu 同帧；z 不转）
             out = []
@@ -194,7 +275,8 @@ def main():
             pts = out
         o = PointCloud2()
         o.header.stamp = m.header.stamp
-        o.header.frame_id = st["frame"]
+        o.header.frame_id = ("enu" if args.frame == "camera"
+                            else st["frame"])
         o.height, o.width = 1, len(pts)
         o.fields = [PointField(n, 4 * i, PointField.FLOAT32, 1)
                     for i, n in enumerate(("x", "y", "z"))]
@@ -206,10 +288,11 @@ def main():
         pub.publish(o)
 
     rospy.Timer(rospy.Duration(1.0 / args.rate), tick)
-    rospy.loginfo("cloud_adapter[%d]: %s → %s range=%.1f voxel=%.2f "
-                  "cap=%d z_rel=[%.1f,%.1f]", args.id, args.src, out_t,
-                  args.range, args.voxel, args.max_points,
-                  flt.z_min_rel, flt.z_max_rel)
+    rospy.loginfo("cloud_adapter[%d]: %s → %s frame=%s range=%.1f "
+                  "voxel=%.2f cap=%d z_rel=[%.1f,%.1f] tilt=%.0f°",
+                  args.id, args.src, out_t, args.frame, args.range,
+                  args.voxel, args.max_points, flt.z_min_rel,
+                  flt.z_max_rel, args.cam_tilt_deg)
     rospy.spin()
 
 

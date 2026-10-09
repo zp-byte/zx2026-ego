@@ -11,7 +11,7 @@ if not _d:
     _c = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))))), "tools", "gcs")
     _d = _c if os.path.isdir(_c) else os.path.expanduser(
-        "~/zx2026_defop_ws/tools/gcs")
+        "~/zx2026_ego_ws/tools/gcs")
 sys.path.insert(0, _d)   # 实现内 import odom_tf 同目录解析
 # 剥 roslaunch 注入参数（__name:=/__log:=）——本体 argparse 不识别会炸
 # （首飞实证 2026-09-26：五 shim 全灭于此，sim 手跑故从未暴露）

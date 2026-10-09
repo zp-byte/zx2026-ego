@@ -17,6 +17,12 @@
 #      monitor）真机不存在，机制空转无意义；真机碰撞=物理接触，兜底=RC 三通
 #      （6 通悬停/5 通接管/7 通锁桨）+ GCS panic 双轨。post_hit_calm/
 #      hazard_share 随事件源空转（键保留，勿删——sim 侧仍用）
+# 2026-10-09 refresh：补齐 sim 侧 09-26 之后新增键——planner / heading_align
+#   （10-07~10-08 定谳值原样携带）/ branch_handling.evidence.rigid_min_pts（甲-C）/
+#   deadend_escape.contact_* / recovery.ground_depth / branches.* /
+#   return_route.via_y+jitter / sensor.depth（sim 渲染参数，真机不消费）。
+#   键结构全量对齐，除 heading_align 外均为「结构对齐键」（真机代码路径不读或
+#   总开关关闭）。heading_align 已在 sim 翻默认 strict——真机首飞可一键回 off。
 # 真值泄漏审计（真机必须全过）：
 #   closed_loop.enabled=true（点云闭环）✓ / mission.via_slots.source=cloud ✓ /
 #   color_id.source=camera（competition_rules 侧，部署时核对）✓
@@ -76,6 +82,9 @@ mission:
     zone_margin: 1.0
   return_route:
     enabled: false         # W2-P1 v1 判毙保持关
+    via_y: 8.5             # （结构对齐；enabled=false 不消费）中缝唯一全宽自由
+                           # 带中心 y 8.10..8.90
+    jitter: 0.1            # （同上）逐机 y 抖动（id%3）
 
 # ---- 闭环感知规划 --------------------------------------------------------------
 closed_loop:
@@ -160,6 +169,9 @@ closed_loop:
     goal_stall_s: 3.0
     goal_speed: 0.8
     goal_max_s: 10.0
+    contact_block_r: 0.0   # 【10-08 法证→当日判否，回默认关】撞点接触块半径
+    contact_ttl_s: 12.0    # 撞点淘汰表 TTL (s)——d5 同格再撞间隔 11.4s 实测恰在窗内
+    contact_blind_v: 0.0   # 盲撞回退记接触所需最小水平速度；0=关（判否保持）
     cloud_clear_r: 1.0
     exit_hyst_s: 2.5       # P5 退出迟滞
   point_cache:
@@ -186,6 +198,12 @@ closed_loop:
       thresh_near: 2
       thresh_far: 4
       trust_r: 5.0
+      rigid_min_pts: 36     # 【甲-C 2026-10-08】刚性格锁存线：累计点数跨过该值的
+                            # 格永久封格（不参与 window_s 遗忘）——树干 3m 处单帧
+                            # 数百点/格轻松跨过，细枝 6-12 点够不到；治 1.5s 窗把
+                            # 永久树干与风摆细枝同等对待的 A* 短视。0=关。
+                            # 真机云密度（Mid-360 2 万点/帧 / D435 深度）远超 sim，
+                            # 36 保守成立；若现场见细枝误锁存再上调。
     uncertain:
       enabled: true
       v_max: 0.6
@@ -216,6 +234,11 @@ closed_loop:
 branches:
   enabled: false            # 杨树林外部 SDF 契约保持关（现役科目三网格场景恢复
                             # true 回旧行为）
+  per_tree: [3, 5]          # （结构对齐；enabled=false 不消费）
+  z_range: [0.8, 2.6]
+  len_range: [0.6, 1.6]
+  el_range: [-0.5, 0.3]
+  r_range: [0.008, 0.022]
 
 # ---- 碰撞恢复 ----------------------------------------------------------------
 collision:
@@ -230,6 +253,10 @@ collision:
     park_ground_skip: true
     low_bounce_up: true
     fence_events: false
+    ground_depth: 0.35     # 【10-08 用户裁决「z=0.35 不算碰撞」】地面子句埋入深度：
+                           # pos[2]-radius+ground_depth < ground_z 才判。0.0=球底触地
+                           # 即判（旧口径把机身中心贴地误判碰撞）。结构对齐键——真机
+                           # recovery.enabled=false 整段不消费，保留防 sim 侧 diff 漂移。
 
 # ---- 传感器噪声（sim 传感模拟参数，world 侧消费；真机 nav 不读，保留对齐） ----
 sensor:
@@ -251,6 +278,22 @@ sensor:
     pixel_noise_std: 6.0
     dropout_rate: 0.02
     render_crowns: false
+  depth:                    # 【结构对齐键——sim 前视深度相机合成渲染参数，真机
+                            # 不消费（真机感知=物理 D435 + realsense2_camera）。
+                            # 保留使 sim_settings.yaml diff 只剩真实差异】
+    enabled: true
+    fps: 7.5
+    width: 480
+    height: 270
+    hfov_deg: 87.0
+    vfov_deg: 58.0
+    max_range: 10.0
+    noise_std: 0.02
+    min_range: 0.2
+    dropout: 0.02
+    render_crowns: false
+    cam_pitch_deg: 0.0
+    render_boxes: true
 
 # ---- 时间管理 ----------------------------------------------------------------
 world_dt: 0.01
@@ -284,3 +327,29 @@ comms:
   burst_len: [3, 10]
   expire_s: 2.0             # 邻居过期时间 (s)——真机 WiFi 抖动下该值的实测
                             # 调校=联调日新增项
+
+# ---- 规划器选择 --------------------------------------------------------------
+planner:
+  source: internal          # internal | defop（P3 shadow 模式开关）；ego_ws 臂
+                            # 固定 internal（defop 臂在 zx2026_defop_ws）
+
+# ---- 机头对齐（heading_align；2026-10-07 立案，docs/depth_chain_case.md §4.9）--
+# 病灶：vel_cmd.angular.z 契约=偏航速率，nav_node 唯一写者却从不赋值 ⇒ yaw 冻结
+# ⇒ 前视感知只剩一个固定楔形。10-07~10-08 sim A/B 定谳值原样携带：
+#   strict / gain 1.0（治继电器极限环）/ enter 35°（治边缘频繁进出）/
+#   strict_scale 1.0（0.15 慢速盲飞判否）/ aim final（相机看向真实去向）。
+# ⚠ 真机首飞建议：不确定时先把 mode 改回 "off"（一行），起飞正常后再切 strict。
+# ⚠ 必须带引号：YAML 1.1 把裸 off/on 解析成布尔 False/True（本仓已二犯）。
+heading_align:
+  mode: "strict"
+  yaw_rate_max: 1.5         # rad/s；nav 侧自夹
+  gain: 1.0                 # rate = clip(gain·err, ±yaw_rate_max)；饱和门槛 86°，
+                            # 回路线性（环路增益 0.5 < π/2 稳定裕度充足）
+  enter_deg: 35.0           # strict 进门阈值（>此偏差 → 压平移+转）
+  exit_deg: 8.0             # 退门阈值；enter > exit 防抖
+  vh_min: 0.15              # 水平速率下限：低于此不转不门控（悬停/纯垂直）
+  strict_scale: 1.0         # 门控期水平速度缩放；0.15 臂判否（慢速盲飞+crab 反升
+                            # 60.6→79.7°+landed 0）；**不取 0**（scale→0 磨树定谳）
+  max_align_s: 4.0          # 门控最长时长（防楔死兜底：超时无条件释放）
+  aim: "final"              # final=最终去向 cmd（含反应层增量）；缩放目标恒为航路分量
+  rearm_deg: 35.0           # 锁存目标偏离超此值重锁；≡enter（局#18 判否回滚值）
