@@ -1,0 +1,57 @@
+<launch>
+  <!-- =============================================================================
+       real_d435.launch — D435 真机整机一键入口（2026-10-09）
+       =============================================================================
+       = d435.launch（D435 降流驱动档）+ real_fleet.launch（三桥一芯注入栈）。
+       本文件只是薄封装：D435 特有默认值在这里覆盖，其余参数原样透传。
+
+       用法（每机一份，id 各机不同；本目录非 catkin 包，roslaunch 走全路径）：
+         roslaunch 带 wait 参数拉 core_wrapper   # 先拉官方飞行栈（Diff-planner
+                                                #   sh_files：mavros/faster-lio/
+                                                #   ekf/px4ctrl），等 roscore 就绪
+         roslaunch ~/zx2026_ego_ws/real/orin_nx/launch/real_d435.launch id:=0
+
+       ⚠ 现场必测三参（装订后写死）：
+         cam_tilt_deg —— D435 安装下俯角（度，下俯为正）；水平安装=0
+         cam_dx/dy/dz —— 相机光心在机体系安装平移 (m)，机体系 x 前 y 左 z 上
+         yaw0_deg     —— LIO 系 x 轴相对场地 ENU 东向的安装偏角（三桥同源）
+       cam_* 猜错 = 整张障碍图错位（树影偏移），首飞前务必悬停目检：
+         rostopic echo /drone_0/cloud | 数点，核对前方树在云中的方位与真值一致。
+  -->
+  <!-- ===== D435 驱动档 ===== -->
+  <arg name="serial_no" default="" doc="多相机同机时用序列号绑定；单机留空"/>
+  <arg name="cam_tilt_deg" default="0.0" doc="【现场必测】安装下俯角，下俯为正"/>
+  <arg name="cam_dx" default="0.0" doc="【现场必测】安装平移 x 前 (m)"/>
+  <arg name="cam_dy" default="0.0" doc="【现场必测】安装平移 y 左 (m)"/>
+  <arg name="cam_dz" default="0.0" doc="【现场必测】安装平移 z 上 (m)"/>
+
+  <!-- ===== 透传 real_fleet.launch 全参（同名单默认覆盖见上，其余同源默认） ===== -->
+  <arg name="id" default="0"/>
+  <arg name="yaw0_deg" default="0.0"/>
+  <arg name="ex0" default="0.0"/>
+  <arg name="ny0" default="0.0"/>
+  <arg name="odom_src" default="/ekf/ekf_odom"/>
+  <arg name="server" default="192.168.31.100:9870"/>
+  <arg name="max_vel" default="1.2" doc="首飞 1.2 保守档；sim 定谳 2.0 需现场复验后再抬"/>
+  <arg name="missions" default="$(env HOME)/zx2026_ego_ws/tools/gcs/missions.yaml"/>
+  <arg name="profile" default="$(env HOME)/zx2026_ego_ws/tools/gcs/profile_real_lio.yaml"/>
+  <arg name="stage_local" default="false" doc="仅 1 号机 true"/>
+  <arg name="camera" default="false" doc="下视识别线开关（首飞保持 false）"/>
+  <arg name="camera_topic" default="/drone_$(arg id)/camera/image_raw"/>
+
+  <include file="$(env HOME)/zx2026_ego_ws/real/orin_nx/launch/d435.launch">
+    <arg name="camera" value="camera"/>
+    <arg name="serial_no" value="$(arg serial_no)"/>
+  </include>
+
+  <include file="$(env HOME)/zx2026_ego_ws/src/arena_bridges/launch/real_fleet.launch"
+           pass_all_args="true">
+    <!-- D435 档核心覆盖：云源换成 D435 points，cloud_adapter 走相机系重投影 -->
+    <arg name="cloud_src" value="/camera/depth/color/points"/>
+    <arg name="cloud_frame" value="camera"/>
+    <arg name="cam_tilt_deg" value="$(arg cam_tilt_deg)"/>
+    <arg name="cam_dx" value="$(arg cam_dx)"/>
+    <arg name="cam_dy" value="$(arg cam_dy)"/>
+    <arg name="cam_dz" value="$(arg cam_dz)"/>
+  </include>
+</launch>

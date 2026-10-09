@@ -1,0 +1,41 @@
+<launch>
+  <!-- =============================================================================
+       d435.launch — D435 降流档（真机导航感知源，2026-10-09）
+       =============================================================================
+       降流定谳：rs_camera 必带降流参数防 USB overflow（zx2026 D435 颜色链
+       2026-09 定谳）。导航档取 424×240@15——点数 ~10 万/帧量级，
+       cloud_adapter 四道滤后对齐 sim「数百点」契约，nodelet 侧 CPU 开销
+       8GB Orin NX 可承受。
+       产物话题：
+         /camera/depth/color/points   ← real_d435.launch 传给 cloud_adapter
+         /camera/color/image_raw      ← 识别线备用（camera:=true 时 color_detector）
+       USB 红线：error-71 断流病=接触不良（换口解决定谳）——用 USB3 口直插，
+       禁 hub；瞬断后 nodelet 空壳须重启（preflight.sh 检 hz 抓）。
+  -->
+  <arg name="camera" default="camera"/>
+  <arg name="serial_no" default=""/>
+
+  <node pkg="nodelet" type="nodelet" name="$(arg camera)_manager"
+        args="manager" output="screen"/>
+  <node pkg="nodelet" type="nodelet" name="$(arg camera)" output="screen"
+        args="load realsense2_camera/RealSenseNodeFactory $(arg camera)_manager">
+    <param name="serial_no" value="$(arg serial_no)"/>
+    <param name="base_frame_id" value="$(arg camera)_link"/>
+    <param name="enable_depth" value="true"/>
+    <param name="depth_width" value="424"/>
+    <param name="depth_height" value="240"/>
+    <param name="depth_fps" value="15"/>
+    <param name="enable_color" value="true"/>
+    <param name="color_width" value="424"/>
+    <param name="color_height" value="240"/>
+    <param name="color_fps" value="15"/>
+    <param name="enable_sync" value="true"/>
+    <param name="align_depth.enable" value="true"/>
+    <param name="enable_pointcloud" value="true"/>
+    <param name="pointcloud_texture_stream" value="RS2_STREAM_COLOR"/>
+    <!-- 深度剪远：8m 硬顶（sensor_range 5m 滤在下游，这里减 USB 带宽） -->
+    <param name="clip_distance" value="8.0"/>
+    <param name="publish_tf" value="false"/>
+    <param name="depth_module.emitter_enabled" value="1"/>
+  </node>
+</launch>
