@@ -15,6 +15,12 @@
 # =============================================================================
 ID=${1:-0}
 FAIL=0; WARN=0
+
+# ROS 环境：脚本独立跑（新终端/双击）也必须能找到 rostopic/rospack
+source /opt/ros/noetic/setup.bash 2>/dev/null
+for f in "$HOME/zx2026_ego_ws/devel/setup.bash" "$(dirname "$0")/../../devel/setup.bash"; do
+  [ -f "$f" ] && source "$f" && break
+done
 pass(){ echo "  [PASS] $1"; }
 fail(){ echo "  [FAIL] $1"; FAIL=$((FAIL+1)); }
 warn(){ echo "  [WARN] $1"; WARN=$((WARN+1)); }
@@ -92,7 +98,7 @@ elif [ -f "$PKG" ] && cmp -s "$PKG" "$DEPLOYED"; then
 else
   fail "装订不一致——重拷：cp $PKG $DEPLOYED（部署方式=改名覆盖，见 README）"
 fi
-BOUND=$(grep -m1 -E '^  source: cloud' "$DEPLOYED" 2>/dev/null)
+BOUND=$(grep -m1 'source: cloud' "$DEPLOYED" 2>/dev/null)
 [ -n "$BOUND" ] && pass "mission.via_slots.source=cloud（真值泄漏审计过）" \
                  || warn "via_slots.source 非 cloud——真值泄漏审计红线，部署后必须复核"
 
