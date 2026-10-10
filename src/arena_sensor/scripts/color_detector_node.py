@@ -22,7 +22,7 @@ from std_msgs.msg import Int32, UInt8, Float32
 from sensor_msgs.msg import Image
 
 from zx2026_common import config as cfg
-from arena_sensor.color_detect import detect, make_detect_params, NO_DET
+from arena_sensor.color_detect import detect, make_detect_params, NO_DET, to_bgr
 
 
 class ColorDetectorNode:
@@ -68,17 +68,15 @@ class ColorDetectorNode:
         self._active = True
 
     def _on_image(self, msg):
-        if msg.encoding == "rgb8":          # 真机 D435 RGB
-            img = np.ascontiguousarray(
-                np.frombuffer(msg.data, np.uint8).reshape(
-                    msg.height, msg.width, 3)[:, :, ::-1])
-        else:                               # 仿真 bgr8
-            if msg.encoding != "bgr8":
-                rospy.logwarn_throttle(10.0,
-                                       "drone %d unsupported encoding %s",
-                                       self.drone_id, msg.encoding)
-            img = np.frombuffer(msg.data, np.uint8).reshape(
-                msg.height, msg.width, 3)
+        # 编码统一入口（bgr8/rgb8/yuyv/uyvy 显式转换；不认识的编码**拒帧**，
+        # 不再静默当 bgr8 硬解——2026-10-10 C100 定谳，见 color_detect.to_bgr）
+        img = to_bgr(msg.data, msg.encoding, msg.width, msg.height)
+        if img is None:
+            rospy.logwarn_throttle(10.0,
+                                   "drone %d unsupported encoding %r -> frame "
+                                   "rejected (stale watchdog will fire)",
+                                   self.drone_id, msg.encoding)
+            return
         color_u8, conf, _ = detect(img, self.params)
         type_u8 = self.color_to_type.get(color_u8, NO_DET) \
             if color_u8 != NO_DET else NO_DET

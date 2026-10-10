@@ -1,0 +1,18 @@
+%YAML:1.0
+# vins_right.yaml — infra2（右目）内参模板（2026-10-09 换 VINS 定夺）
+# 数值=D435 infra 640×480 出厂典型内参；首飞前按
+# rostopic echo /camera/infra2/camera_info 的 K 对核，不符以实测为准。
+model_type: PINHOLE
+camera_name: camera
+image_width: 640
+image_height: 480
+distortion_parameters:
+   k1: 0.0
+   k2: 0.0
+   p1: 0.0
+   p2: 0.0
+projection_parameters:
+   fx: 382.580322265625
+   fy: 382.580322265625
+   cx: 321.42095947265625
+   cy: 235.15451049804688

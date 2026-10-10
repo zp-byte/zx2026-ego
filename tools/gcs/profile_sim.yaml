@@ -25,10 +25,10 @@ topics:
 
 # GCS v0 第 2 步：操作编排（gcs_ops.py）——命令模板与门限全配置化
 ops:
-  status_file: /home/ubuntu/zx2026_defop_ws/run_logs/gcs_status.json
+  status_file: /home/ubuntu/zx2026_arena_ws/run_logs/gcs_status.json
   shell_prefix: >-
     source /opt/ros/noetic/setup.bash &&
-    source /home/ubuntu/zx2026_defop_ws/devel/setup.bash &&
+    source /home/ubuntu/zx2026_arena_ws/devel/setup.bash &&
     export ROS_MASTER_URI=http://127.0.0.1:11411 &&
     export ROS_HOSTNAME=127.0.0.1 &&
   cmds:

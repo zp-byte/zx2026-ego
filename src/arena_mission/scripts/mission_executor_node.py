@@ -35,6 +35,25 @@ from zx2026_common.msg import Mission, TaskUpdate
 
 
 # ---------------------------------------------------------------------------
+# GPS 锚定返航（真机 gps_home_node，2026-10-09）：RETURN 入场 pad 修正纯函数
+# （无 ROS，tools/ 自检可直接 import 复用）
+# ---------------------------------------------------------------------------
+def _home_pad_apply(pad, corr, mode, max_corr):
+    """GPS 记录点修正 → (pad', applied, shift_m)。
+
+    corr=None（sim/真机无修正）→ 原样；replace 模式：GPS 目标直接接管
+    （场景 pad 装订未实测时的正确档）；correct 模式：修正点距原 pad 超
+    max_corr 视为 GPS 爆值/帧失准，保持原 pad。shift 由调用方记日志。
+    """
+    if corr is None:
+        return pad, False, 0.0
+    d = math.hypot(corr[0] - pad[0], corr[1] - pad[1])
+    if mode == "correct" and d > max_corr:
+        return pad, False, d
+    return (corr[0], corr[1]), True, d
+
+
+# ---------------------------------------------------------------------------
 # W1 via_slots（2026-09-03 贴树判官团）：越界点散点槽位
 # 共享越界点 = 穿越区重心 (1.0,2.0)，几乎压在 tree#24 (1.1,2.0) 树干上：
 # 六机漏斗串行过同一点 + goal 格恒被真树占用 → nav 侧"goal 周边 5×5 幻影
@@ -238,6 +257,25 @@ class MissionExecutor:
         self.return_stagger = float(rules.get("return_stagger_s", 3.0))
         self.return_at = None
 
+        # ---- GPS 锚定返航（真机 gps_home_node 供给，2026-10-09）----
+        # sim 无 /home/enu 话题 → _home_corr 恒 None → RETURN 入场零行为
+        # 变更。replace 模式：GPS 目标直接接管（场景 pad 装订未实测时的
+        # 正确档）；correct 模式：修正点距原 pad 超 max_corr_m 拒用保持
+        # 原 pad（GPS 爆值/帧失准防护）。
+        self._home_corr = None      # (x, y) GPS 记录点 LIO-ENU 修正目标
+        self._home_mode = str(rospy.get_param("~gps_home_mode", "replace"))
+        self._gps_max_corr = float(rospy.get_param("~gps_max_corr_m", 5.0))
+        # ---- RGB 视觉伺服对齐（真机 drop_align_node 供给）----
+        # sim 无 /align/corr → 恒 None → _drop_hold 重拉回平台心原行为。
+        # 修正带到达时刻戳，重拉时取 age≤align_stale 的最新值。
+        self._align_corr = None     # (x, y, t) RGB 伺服修正（到达时刻打点）
+        self._align_stale = float(rospy.get_param("~align_stale_s", 0.6))
+        # DROP 等回执自愈（real_fleet.launch 真机档默认 15s；sim 缺省 0=关
+        # 零行为变更）：桥不开/桥死/回执丢时超时走 _schedule_return 同一
+        # 返航出口——原位悬停等人工=电池与 GPS 窗口双耗。
+        self.drop_wait_timeout = float(
+            rospy.get_param("~drop_wait_timeout_s", 0.0))
+
         # ---- W1 via_slots：越界点散点槽位（matrix_w1b 后默认开，配置 mission.via_slots） ----
         # 2026-09-23 诚实化：source=cloud（默认）时槽位净空查本机点云占用格
         # （订阅 /drone_<id>/cloud，飞行带内观测点栅格化）；truth=旧真值净空
@@ -287,6 +325,7 @@ class MissionExecutor:
         self._collided = False        # /collision 边沿检测（重分级用）
         self._drop_hold = False       # 释放对准门激活（MATCH 已到但未对准平台心）
         self._drop_align_t0 = 0.0
+        self._drop_t0 = 0.0        # 进入 DROP 的时刻（drop_wait_timeout 自愈用）
         self._drop_step_t0 = 0.0      # 步进精调节流（P0-1 主动收敛）
         self._xy_hist = []            # est xy 短窗（settle 门用，(t,x,y)）
         self._nav_arrived = False     # nav 真值到位信号（arrive_gate 用）
@@ -321,6 +360,9 @@ class MissionExecutor:
         rospy.Subscriber(ns + "/payload/done", Bool, self._on_payload_done)
         rospy.Subscriber(ns + "/detected/color", UInt8, self._on_det_color)
         rospy.Subscriber(ns + "/detected/confidence", Float32, self._on_det_conf)
+        # GPS 返航修正 + RGB 对齐修正（真机节点 latched；sim 无发布方）
+        rospy.Subscriber(ns + "/home/enu", PoseStamped, self._on_home_corr)
+        rospy.Subscriber(ns + "/align/corr", PoseStamped, self._on_align_corr)
         # 同平台排队仲裁：订阅全部机的认领/完成事件
         for j in range(self.scene.drone_count):
             if j == self.drone_id:
@@ -510,6 +552,7 @@ class MissionExecutor:
         """放行投放：位置对准平台心（释放对准门通过）后才发释放指令。"""
         self.state = "DROP"
         self._publish_phase("DROP")
+        self._drop_t0 = rospy.get_time()
         self.pub_payload_cmd.publish(UInt8(data=cfg.type_to_uint8(self.mission.payload_type)))
 
     def _on_match(self, msg):
@@ -544,6 +587,35 @@ class MissionExecutor:
                 self._goto((self.drop[0], self.drop[1], self.cruise_z))
                 self._pending = "DESCEND"
 
+    def _on_home_corr(self, msg):
+        """GPS 记录点修正目标（gps_home_node latched，DROP 段发布）。"""
+        self._home_corr = (msg.pose.position.x, msg.pose.position.y)
+
+    def _on_align_corr(self, msg):
+        """RGB 伺服修正目标（drop_align_node，随帧率；到达时刻打点）。"""
+        self._align_corr = (msg.pose.position.x, msg.pose.position.y,
+                            rospy.get_time())
+
+    def _apply_home_corr(self):
+        """RETURN 入场把 pad 换成 GPS 记录点（一次性；判完成随 pad 跟随）。"""
+        pad, applied, d = _home_pad_apply(self.pad, self._home_corr,
+                                          self._home_mode, self._gps_max_corr)
+        if self._home_corr is None:
+            return
+        if applied:
+            self.pad = pad
+            rospy.loginfo("drone %d return pad GPS-corrected (%.2f, %.2f) "
+                          "shift %.2fm mode=%s", self.drone_id, pad[0],
+                          pad[1], d, self._home_mode)
+            if d > self._gps_max_corr:
+                rospy.logwarn("drone %d GPS home %.2fm off scene pad "
+                              "(>%.2fm)——场景装订或 yaw0 疑失准，返航点以 "
+                              "GPS 记录为准", self.drone_id, d,
+                              self._gps_max_corr)
+        else:
+            rospy.logwarn("drone %d home corr %.2fm > clamp %.2fm, keep "
+                          "scene pad", self.drone_id, d, self._gps_max_corr)
+
     def _on_abort(self, msg):
         """GCS panic：原地悬停自锁（goal=当前位置，nav P 环收敛后指令≈0）。
 
@@ -577,18 +649,23 @@ class MissionExecutor:
 
     def _on_payload_done(self, msg):
         if self.state == "DROP" and msg.data:
-            # 返航错峰：先爬到投放点上方巡航高度悬停，drone i 延迟 i*return_stagger 后再返航
-            self.return_at = rospy.get_time() + self.drone_id * self.return_stagger
-            self.state = "RETURN_PENDING"
-            self._publish_phase("RETURN_PENDING")
-            # 闭环模式爬升悬停点东偏 1.2m：同平台排队者（WAIT→下降柱）与本机
-            # 爬升柱物理错开，防"done 即放行"窗口的垂直交错相撞
-            if self._cid_enabled:
-                self._goto((self.drop[0] + 1.2, self.drop[1], self.cruise_z))
-            else:
-                self._goto((self.drop[0], self.drop[1], self.cruise_z))
-            rospy.loginfo("drone %d return scheduled in %.1fs",
-                          self.drone_id, self.drone_id * self.return_stagger)
+            self._schedule_return("payload-done")
+
+    def _schedule_return(self, why):
+        """DROP 收尾统一出口（done 回执 / drop_wait_timeout 超时自愈共用）：
+        返航错峰——先爬到投放点上方巡航高度悬停，drone i 延迟
+        i*return_stagger 后再返航。"""
+        self.return_at = rospy.get_time() + self.drone_id * self.return_stagger
+        self.state = "RETURN_PENDING"
+        self._publish_phase("RETURN_PENDING")
+        # 闭环模式爬升悬停点东偏 1.2m：同平台排队者（WAIT→下降柱）与本机
+        # 爬升柱物理错开，防"done 即放行"窗口的垂直交错相撞
+        if self._cid_enabled:
+            self._goto((self.drop[0] + 1.2, self.drop[1], self.cruise_z))
+        else:
+            self._goto((self.drop[0], self.drop[1], self.cruise_z))
+        rospy.loginfo("drone %d return scheduled (%s) in %.1fs",
+                      self.drone_id, why, self.drone_id * self.return_stagger)
 
     # ---------------------------------------------------------------- helpers
     def _compute_formation_offset(self):
@@ -923,6 +1000,9 @@ class MissionExecutor:
             if self.return_at is not None and rospy.get_time() >= self.return_at:
                 self.state = "RETURN"
                 self._publish_phase("RETURN")
+                # GPS 锚定返航（真机 gps_home_node 供给；sim 无修正=原 pad）：
+                # 一次性换 pad，RETURN 全部 _goto 与 LANDING 水平距判完成随 pad 跟随
+                self._apply_home_corr()
                 # 两段式返航：先以巡航高度回到降落区上空，到位再降到悬停高度。
                 # 避免穿越林区时提前降到悬停高度(1.5m)在林缘死点卡住。
                 # W2-P1 return_route（默认关）：三段式——先到中缝路点
@@ -940,6 +1020,16 @@ class MissionExecutor:
                     self._pending = "DESCEND_PAD"
                     rospy.loginfo("drone %d return start (cruise to pad)", self.drone_id)
             return
+        # DROP 等回执自愈（drop_wait_timeout_s<=0=关；sim 缺省关、真机默认
+        # 15s）：桥不开/桥死/回执丢——超时走与 payload/done 完全相同的
+        # _schedule_return 出口（错峰爬升返航）。DROP 是全状态机唯一无界
+        # 等待态（AT_DROP 无界由 match TIMEOUT 重试链兜底）。
+        if self.state == "DROP" and self.drop_wait_timeout > 0.0:
+            _dt = rospy.get_time() - self._drop_t0
+            if _dt > self.drop_wait_timeout:
+                rospy.logwarn("drone %d DROP %.1fs no payload/done -> auto-return",
+                              self.drone_id, _dt)
+                self._schedule_return("drop-wait-timeout")
         if self.goal is None:
             return
 
@@ -1059,10 +1149,20 @@ class MissionExecutor:
                     # 位置推出小圈/放行门外时，重发平台心 goal 重启 nav 小
                     # 修正（真值 offset 收敛到 ~|漂移| 下界 ~0.1-0.3）。
                     # 1.5s 节流防打断拉动中的 nav。
-                    self._goto((self.drop[0], self.drop[1], self.drop_hover_z))
+                    # RGB 视觉伺服优先（真机 drop_align_node，2026-10-09）：
+                    # 新鲜修正（age≤align_stale）替换平台心——装订误差/漂移
+                    # 的平台心误差由像素误差换算的 ENU 修正点吃掉；修正过期
+                    # （断流/异色）回退平台心，释放门不变。
+                    gx, gy = self.drop[0], self.drop[1]
+                    ac = self._align_corr
+                    if ac is not None and now - ac[2] <= self._align_stale:
+                        gx, gy = ac[0], ac[1]
+                    self._goto((gx, gy, self.drop_hover_z))
                     self._drop_step_t0 = now
-                    rospy.loginfo("drone %d align re-pull, offset %.2f",
-                                  self.drone_id, horiz)
+                    rospy.loginfo("drone %d align re-pull, offset %.2f%s",
+                                  self.drone_id, horiz,
+                                  " (rgb-corrected)" if (gx, gy) != (
+                                      self.drop[0], self.drop[1]) else "")
 
 
 if __name__ == "__main__":

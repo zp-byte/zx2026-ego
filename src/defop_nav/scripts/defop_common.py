@@ -169,30 +169,10 @@ def time_weight_matrix(action_horizon, time_weight_factor):
 # ============================ 几何监督器（vendored） ============================
 
 def compute_margin(r, d, fov_rad, num_yaw):
-    """障碍在距离 d 处张角 2*atan(r/d) 需封锁的 yaw 扇区数。evaluate.py L352-360。
-
-    ⚠ r 在这里是**机体半径**，调用方必须传与判据同径的值（本仓 = 0.35，
-    见 defop_nav.yaml sup_drone_radius 注释）。上游 evaluate.py 的 0.30 是
-    论文 0.4m 机架的实参，不是本 sim 0.5×0.5×0.2 盒的尺寸。
-    """
+    """障碍在距离 d 处张角 2*atan(r/d) 需封锁的 yaw 扇区数。evaluate.py L352-360。"""
     delta_theta = fov_rad / num_yaw
     theta = 2 * np.arctan(r / d)
     return int(np.ceil((theta / 2) / delta_theta))
-
-
-def compute_margin_cone(r, d, fov_rad, num_yaw):
-    """净空锥版：障碍半径在距离 d 处**对航迹**的半张角 = asin(r/d)。
-
-    与 compute_margin 的差别（当 r << d 时二者几乎同值，r/d -> 1 时发散）：
-      atan(r/d) 是"从机体看障碍的角半径"（视在张角）；
-      asin(r/d) 是"航迹偏多少角就会擦上"（净空锥）。判据用的是后者。
-    d=1.2m / r=0.30 时：atan 增量 0，asin 增量 1（扇区）。
-
-    ⚠ 只在新口径 `prim_bearing` 路径下使用；compute_margin 是上游 keep-verbatim
-    锚点（tools/defop_sup_selftest.py 断言其 d>=1.2 增量恒 0），不得替换。
-    """
-    delta_theta = fov_rad / num_yaw
-    return int(np.ceil(np.arcsin(min(1.0, r / d)) / delta_theta))
 
 
 def compute_vertical_margin(r, d, fov_pitch, num_vel_z):
@@ -206,42 +186,17 @@ def filter_actions_by_grid_3(depth_img, fov_yaw, fov_pitch,
                              cmd_yaw_relative, cmd_z_relative,
                              yaw_lib, z_lib,
                              num_yaw=32, num_vel_z=8,
-                             min_dist=1.5, min_ratio=0.02, drone_radius=0.32,
-                             margin_fn=None, prim_bearing=None):
+                             min_dist=1.5, min_ratio=0.02, drone_radius=0.32):
     """扇区网格否决（向量化版），逐字移植 evaluate.py L529-623。
-
-    ⚠ 签名上这四个缺省值是**上游逐字保真的锚点**（0.32 = evaluate.py 签名形参），
-    故意不改——它们在生产路径上是死码：defop_cpn_node 调用点一律显式覆盖
-    （min_dist/min_ratio/drone_radius ← yaml `sup_*` 三键）。**有效值以 yaml 为准**，
-    当前 1.0/0.05/0.35。谁若要按签名缺省跑，等于退回论文档，须自己知道。
-
-    ⚠ 末尾两个参数（margin_fn / prim_bearing）**必须留在 drone_radius 之后**：
-    tools/defop_sup_selftest.py 用正则锚 `min_dist=1.5, min_ratio=0.02,
-    drone_radius=0.32` 校验签名，挪位即误报。
-
-    新增两参（缺省 = 逐字节旧行为，任何老调用点零影响）：
-      margin_fn     障碍侧裕度函数，缺省 compute_margin。指 compute_margin_cone
-                    则改用净空锥 asin(r/d)。
-      prim_bearing  基元的**真实航向**（弧度，机身系 x 前 y 左，与 dyaw 同号）。
-                    给定时，映射轴从 `yaw_lib`（= dyaw 命令角，恒等映射）改为
-                    **图像扇区真方位**，被映射量从 cmd_yaw_relative 改为本数组。
-                    这是修正"命令角 ≠ 飞行航向"这处 2.37 倍口径错配的开关
-                    （dyaw ±39.15° vs β=atan2(0.5·tanh(dyaw),1.0) ±16.53°）。
 
     depth_img: float32 米（或 uint16 毫米，函数内转换）。
     返回 (safe_actions_yaw, safe_actions_z, safe_mask (N,),
           blocked_with_margin (num_yaw,num_vel_z), margins_yaw, margins_z)。
-
-    ⚠ safe_actions_yaw/z 恒为 **cmd_yaw_relative/cmd_z_relative** 的子集——
-    即便走 prim_bearing 路径也只换"查表轴"，不换"输出量"。下游
-    _cmd_from_primitive 靠这个 dyaw 组指令，替换即等于改一行控制指令。
     """
     if depth_img.dtype == np.uint16:
         depth_img = depth_img.astype(np.float32) / 1000.0  # mm -> m
 
     h, w = depth_img.shape
-
-    _margin_fn = compute_margin if margin_fn is None else margin_fn
 
     obstacle_mask = (depth_img > 0) & (depth_img < min_dist)
 
@@ -280,8 +235,8 @@ def filter_actions_by_grid_3(depth_img, fov_yaw, fov_pitch,
                 close_vals = sector_depth[sector]
                 if close_vals.size > 0:
                     d = np.median(close_vals)
-                    margins_yaw[iy, iz] = _margin_fn(drone_radius, d,
-                                                     fov_yaw, num_yaw)
+                    margins_yaw[iy, iz] = compute_margin(drone_radius, d,
+                                                         fov_yaw, num_yaw)
                     margins_z[iy, iz] = compute_vertical_margin(
                         0.2, d, fov_pitch, num_vel_z)
 
@@ -306,27 +261,8 @@ def filter_actions_by_grid_3(depth_img, fov_yaw, fov_pitch,
     # 原版语义：flip 后再映射动作扇区
     blocked_with_margin = np.flip(blocked_with_margin, axis=(0, 1))
 
-    if prim_bearing is None:
-        # 上游原路：映射轴 = yaw_lib（= 调用点的 cmd_yaw_relative，恒等映射）
-        yaw_axis = yaw_lib
-        yaw_query = cmd_yaw_relative.reshape(-1, 1)
-    else:
-        # 修正路：映射轴 = 图像扇区真方位，被映射量 = 基元真实航向
-        pb = np.asarray(prim_bearing, dtype=np.float64).reshape(-1)
-        if len(pb) != len(cmd_yaw_relative):
-            raise ValueError('prim_bearing %d != cmd_yaw_relative %d'
-                             % (len(pb), len(cmd_yaw_relative)))
-        # flip 之后行 j <- 原始扇区 (num_yaw-1-j)；用 col_ends 中线，勿假设等宽
-        _c = (num_yaw - 1) - np.arange(num_yaw)
-        _col_c = 0.5 * (col_ends[_c] + col_ends[_c + 1])
-        # 相机约定 col 0 = 左 = +yaw（probe_sup 符号链自检 PASS）；
-        # 行 j 升 -> 原始扇区号降 -> 列心左移 -> 方位升，故本轴天然升序，
-        # 与 yaw_lib / flip 后的行序一致。
-        _fx = (w / 2.0) / np.tan(fov_yaw / 2.0)
-        yaw_axis = -np.arctan((_col_c - w / 2.0) / _fx)
-        yaw_query = pb.reshape(-1, 1)
-
-    iy_indices = np.argmin(np.abs(yaw_axis - yaw_query), axis=1)
+    iy_indices = np.argmin(np.abs(yaw_lib - cmd_yaw_relative.reshape(-1, 1)),
+                           axis=1)
     iz_indices = np.argmin(np.abs(z_lib - cmd_z_relative.reshape(-1, 1)),
                            axis=1)
 

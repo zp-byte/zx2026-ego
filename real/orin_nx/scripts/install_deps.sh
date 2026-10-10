@@ -13,6 +13,7 @@ echo "== [1/4] apt 包 =="
 sudo apt update
 sudo apt install -y \
   ros-noetic-realsense2-camera \
+  ros-noetic-usb-cam \
   ros-noetic-mavros ros-noetic-mavros-extras \
   python3-rospkg python3-numpy python3-yaml \
   rosbash ros-noetic-rosbash
@@ -25,7 +26,7 @@ else
   echo "    wget https://raw.githubusercontent.com/mavlink/mavros/master/mavros/scripts/install_geographiclib_datasets.sh"
 fi
 
-echo "== [3/4] udev 规则（D435 非 root 可读，免 sudo 跑相机） =="
+echo "== [3/4] udev 规则（D435 非 root 可读 + C100 稳定软链） =="
 RULES="$(dirname "$0")/../udev/99-realsense-libusb.rules"
 if [ -f "$RULES" ]; then
   sudo cp "$RULES" /etc/udev/rules.d/
@@ -34,6 +35,14 @@ if [ -f "$RULES" ]; then
 else
   echo "  [WARN] 包内无 rules 文件，跳过"
 fi
+CD_RULES="$(dirname "$0")/../udev/99-camera-down.rules"
+if [ -f "$CD_RULES" ]; then
+  sudo cp "$CD_RULES" /etc/udev/rules.d/
+  echo "  已装 99-camera-down.rules 模板——**先用 lsusb 的 VID:PID 替换模板"
+  echo "  里 XXXX/yyyy 再拔插 C100**，确认 ls -l /dev/camera_down 出现"
+else
+  echo "  [WARN] 包内无 99-camera-down.rules，跳过"
+fi
 
 echo "== [4/4] 自检 =="
 python3 -c "import numpy, yaml; print('numpy', numpy.__version__, '/ yaml OK')"
@@ -41,6 +50,8 @@ rospack find realsense2_camera >/dev/null 2>&1 && echo "realsense2_camera OK" \
   || { echo "[FAIL] realsense2_camera 未找到——重开终端再试或查 apt 报错"; exit 1; }
 rospack find mavros >/dev/null 2>&1 && echo "mavros OK" \
   || { echo "[FAIL] mavros 未找到"; exit 1; }
+rospack find usb_cam >/dev/null 2>&1 && echo "usb_cam OK（C100 驱动）" \
+  || echo "[WARN] usb_cam 未找到——C100 拉不起；查 apt 源或 vendor 份 usb_cam 进 ws"
 
 cat <<'EOF'
 

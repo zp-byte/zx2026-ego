@@ -1,0 +1,21 @@
+<launch>
+  <!-- =============================================================================
+       vins_d435.launch — VIO 主档 VINS-Fusion 拉起（2026-10-09 换 VINS 定夺）
+       =============================================================================
+       包名 vins / 节点名 vins：与 Diff-Planner 官方 sh_files/run_single_vio.sh 的
+       `roslaunch vins vins_d435.launch` 逐字对齐；节点相对话题 imu_propagate 在
+       节点名 vins 下解析为 /vins/imu_propagate——px4ctrl 官方 run_ctrl_vio.launch
+       的 odom remap 即此名，三桥 odom_src 亦此名，三处同源零 remap。
+       VINS 源码：fd250_ws 的 VINS-Fusion fork（包名 vins，D435+PX4 IMU 实战档）。
+       机上部署（README §VINS）：
+         1) fd250_ws/Fast-Drone-250/src/realflight_modules/VINS-Fusion 拷入机上
+            ws 的 src/（包名 vins），catkin build vins
+         2) 拷 config/vins_d435_ego.yaml + vins_left.yaml + vins_right.yaml 到
+            vins 包上层 config/ 目录（$(find vins)/../config/，fd250 同约定）
+         3) 标定三件：infra 内参核对 / body_T_cam 外参 / yaw0-ex0-ny0（README）
+       起飞前判据：rostopic hz /vins/imu_propagate ≥50（preflight 检③）。
+  -->
+  <arg name="cfg" default="$(find vins)/../config/vins_d435_ego.yaml"
+       doc="VINS 配置路径（官方约定 vins 包上层 config/；换配置只改这里）"/>
+  <node name="vins" pkg="vins" type="vins_node" output="screen" args="$(arg cfg)"/>
+</launch>

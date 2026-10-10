@@ -10,10 +10,7 @@
 #              无参考填 -1）
 #   marker     参考平台 tag 标识（可空 ""）
 #   takeoff    [e, n, hover_z] 场地 ENU（米）——pad 实测坐标赛前填
-#   cruise_z   穿越区平飞高度（= competition_rules_real.yaml heights.cruise_z
-#              2026-09-27 现场定谳 2.4：灌木顶 2.0+0.4 裕度；sim 侧 2026-10-02
-#              对齐同值。旧 1.2 档的 RECON latch 贴线病灶随抬高消解：done 机
-#              悬停 2.4 vs 平台 0.8 垂直差 1.6m，出 Boids 分离场 1.5）
+#   cruise_z   穿越区平飞高度（RECON latch 定谳 1.2 档；勿回 1.8）
 #   max_vel    该机速度上限（vel_bridge 与 nav 双消费；首飞 1.2 保守档）
 #   seq        全局任务序号（同一起飞批次同值）
 missions:
@@ -23,7 +20,7 @@ missions:
     drop: 1
     marker: P1
     takeoff: [0.0, 0.0, 1.5]
-    cruise_z: 2.4
+    cruise_z: 1.2
     max_vel: 1.2
     seq: 1
   - drone: 1
@@ -32,7 +29,7 @@ missions:
     drop: 2
     marker: P2
     takeoff: [1.0, 0.0, 1.5]
-    cruise_z: 2.4
+    cruise_z: 1.2
     max_vel: 1.2
     seq: 1
   - drone: 2
@@ -41,7 +38,7 @@ missions:
     drop: 3
     marker: P3
     takeoff: [2.0, 0.0, 1.5]
-    cruise_z: 2.4
+    cruise_z: 1.2
     max_vel: 1.2
     seq: 1
   - drone: 3
@@ -50,7 +47,7 @@ missions:
     drop: 1
     marker: P1
     takeoff: [3.0, 0.0, 1.5]
-    cruise_z: 2.4
+    cruise_z: 1.2
     max_vel: 1.2
     seq: 1
   - drone: 4
@@ -59,7 +56,7 @@ missions:
     drop: 2
     marker: P2
     takeoff: [4.0, 0.0, 1.5]
-    cruise_z: 2.4
+    cruise_z: 1.2
     max_vel: 1.2
     seq: 1
   - drone: 5
@@ -68,6 +65,6 @@ missions:
     drop: 3
     marker: P3
     takeoff: [5.0, 0.0, 1.5]
-    cruise_z: 2.4
+    cruise_z: 1.2
     max_vel: 1.2
     seq: 1

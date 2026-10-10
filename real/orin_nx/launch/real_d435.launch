@@ -36,13 +36,23 @@
   <arg name="missions" default="$(env HOME)/zx2026_ego_ws/tools/gcs/missions.yaml"/>
   <arg name="profile" default="$(env HOME)/zx2026_ego_ws/tools/gcs/profile_real_lio.yaml"/>
   <arg name="stage_local" default="false" doc="仅 1 号机 true"/>
-  <arg name="camera" default="false" doc="下视识别线开关（首飞保持 false）"/>
-  <arg name="camera_topic" default="/drone_$(arg id)/camera/image_raw"/>
+  <arg name="camera" default="false" doc="下视识别线开关（首飞保持 false；C100 驱动见 camera_down）"/>
+  <arg name="camera_down" default="false" doc="C100 下视相机驱动开关（camera_down.launch；preflight ⑥ 查其话题，须 true 才能过检）"/>
+  <!-- 同名 arg 默认必须与 real_fleet.launch 同值：pass_all_args 会把本值
+       下传覆盖子默认——2026-10-09 曾留死话题 /drone_N/camera/image_raw
+       （sim 话题名）被静默下传，selftest L4 已加两文件同值对质。 -->
+  <arg name="camera_topic" default="/camera_down/image_raw"/>
+  <arg name="camera_vfov_deg" default="50.0"/>
 
   <include file="$(env HOME)/zx2026_ego_ws/real/orin_nx/launch/d435.launch">
     <arg name="camera" value="camera"/>
     <arg name="serial_no" value="$(arg serial_no)"/>
   </include>
+
+  <!-- C100 下视驱动（独立 USB 设备，与 D435 无关；LIO 档无 D435 时也可
+       单独 roslaunch camera_down.launch。话题 /camera_down/image_raw） -->
+  <include file="$(env HOME)/zx2026_ego_ws/real/orin_nx/launch/camera_down.launch"
+           if="$(arg camera_down)"/>
 
   <include file="$(env HOME)/zx2026_ego_ws/src/arena_bridges/launch/real_fleet.launch"
            pass_all_args="true">

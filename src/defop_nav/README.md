@@ -44,15 +44,12 @@
 三节点脚本必须用 venv 解释器跑（launch 已用 `launch-prefix="$(arg python_exe)"`
 指定，默认 `~/defop_env/bin/python`）：
 
-- TF 2.4.1 + h5py 2.10（CPN）；**torch 2.4.1+cu121（VAE，已装）**
-  ——2026-10-01 实测订正：本行原写 `+cpu`，但 venv 里实际是 `torch-2.4.1+cu121.dist-info`，
-  `torch.cuda.is_available()==True`。这条陈旧声明曾误导一次 GPU 可行性排查，勿再照抄。
-  CUDA 版是 VAE 上卡的前提；若重装，用 `pip install torch==2.4.1 --index-url
-  https://download.pytorch.org/whl/cu121`（**不要**用 `/whl/cpu`）。
+- TF 2.4.1 + h5py 2.10（CPN）；torch 2.4.1+cpu（VAE，已装）
+  `~/defop_env/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu`
 - 脚本内置 `_ensure_ros()`：venv 里 import rospy 失败时自动补
   `/opt/ros/noetic/lib/python3/dist-packages`，所以 venv python 直接跑 ROS 节点；
   反向（系统 python3 跑 venv 依赖）不可行，缺 TF/torch 时节点打明确错误并 exit。
-- 手动单跑示例：`~/defop_env/bin/python ~/zx2026_defop_ws/src/defop_nav/scripts/defop_cpn_node.py`
+- 手动单跑示例：`~/defop_env/bin/python ~/zx2026_ego_ws/src/defop_nav/scripts/defop_cpn_node.py`
 
 ## 帧手术（DeFoP 真机 Twist -> arena 世界系 vel_cmd）
 
@@ -118,9 +115,6 @@ Rz(yaw) 转世界系再走同一管线）。
    depth+latent 断流 >1.0s HOLD 零速 WARN 一次 / 规划异常兜底零速。
 6. **方向服务与超时移除**：`set_goal_dir` 服务（原版外部指挥接口）与
    A-ORACLE timeout 机制（PLANNING_TYPE=1 本来就恒 SUCCESS）不移植。
-   ⚠ 2026-10-02 补注：该移除使上游 `has_deadend_in_segment` 的**唯一读点**
-   （evaluate.py:835，timeout_action 提前 FAIL，原意=防两种 yaw 模式抖动）
-   在本仓悬空，故它"三写零读"是**连带结果**，非新缺陷；见差异清单第 10 条。
 7. **无模型降级**（默认关，`allow_degraded=false` 时模型装载失败即 exit）：
    TF/权重缺失时可用纯监督器模式（无 CPN 打分，选目标航向差最小的监督器
    安全基元，同档 tie-break 用高度差；yaw 库 32 档无精确 0，最近档
@@ -132,20 +126,6 @@ Rz(yaw) 转世界系再走同一管线）。
 9. **TF 权重装载**：hdf5 为 weights-only 语义——按原版
    seVAENetworkInferenceTensorflow 的装载序（TrainCPNseVAE 建网 -> 零输入
    build -> load_weights -> InferenceCPNseVAE.load_model 按层名搬权重）×3。
-10. **死端旋转超时 + 退出迟滞 + 强制放宽**（2026-10-02 立案，**默认关**）：
-   上游 `deadend_action`（evaluate.py:309-326）是**无超时无迟滞的两态 latch**，
-   唯一出口是「min_score < deadend_low 且 len(safe)>0」——掩膜一收紧（如 β 档）
-   就"进得去出不来"，无界原地旋转、零前进烧预算；本仓实测相邻回合最短仅 0.6 s
-   （空↔非空抖动反复进出）。本仓新增：
-   `deadend_exit_hyst_s`（退出条件须**连续**满足，治抖动）、
-   `deadend_max_s`（旋转超时 -> **强制放宽**：该拍用分数阈值集 `indx` 取代
-   监督掩膜过滤后的 `indx1`，接受被否决的最高分基元，把"无界零前进"换成
-   "有界前进"）。两键缺省 `0.0` = **逐字节旧行为**（守卫 `tools/
-   defop_deadend_selftest.py` 的 [G] 用改前实现做逐拍对拍机器证明）。
-   状态机本体抽为模块级纯函数 `_deadend_step_logic`，真机与影子 replica
-   共用（守卫 [F] 机器化防"两份实现"漂移）。
-   ⚠ 越界即偏离上游：`max_s>0` 会主动接受监督层否决的基元 ⇒ Σcol 可能上升，
-   故默认关，须经 A/B（`docs/deadend_timeout_case.md`）才翻。
 
 ## 权重文件清单（引用路径，不拷贝）
 

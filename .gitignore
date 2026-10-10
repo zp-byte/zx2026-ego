@@ -5,3 +5,6 @@ logs/
 .catkin_workspace
 __pycache__/
 *.pyc
+
+# --- Run archives (A/B matrix evidence, too bulky for git) ---
+run_logs/

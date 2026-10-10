@@ -84,7 +84,9 @@ class Agent(object):
                 # FR-1.8 投放事件/首投时间戳
                 "matched": None, "drop_done": False, "first_drop_t": None,
                 # FR-1.9 匹配过程可视化
-                "match_progress": None}
+                "match_progress": None,
+                # GPS 记点/RGB 对齐状态（真机 gps_home/drop_align String latch）
+                "home_gps": None, "align": None}
 
     # ---- ROS 采集 ----------------------------------------------------------
     def spin_ros(self):
@@ -129,6 +131,14 @@ class Agent(object):
                 rospy.Subscriber(self.tp["match_progress"].format(id=i),
                                  String, self._on_match_progress, i,
                                  queue_size=1)
+            # GPS 记点/RGB 对齐状态（String latch，gps_home/drop_align 直发；
+            # sim profile 两键 null 自动跳过）
+            if self.tp.get("home_gps"):
+                rospy.Subscriber(self.tp["home_gps"].format(id=i),
+                                 String, self._on_home_gps, i, queue_size=1)
+            if self.tp.get("align"):
+                rospy.Subscriber(self.tp["align"].format(id=i),
+                                 String, self._on_align, i, queue_size=1)
             # FR-1.4 真机建图：PointCloud2 → RLE 栅格（sim 用 OccupancyGrid，
             # 此键 null；真机 LIO/VIO 累积点云现场定 topic 后填入）
             if self.tp.get("grid_cloud"):
@@ -167,6 +177,16 @@ class Agent(object):
         susp = self.tp.get("summary")
         if susp:
             rospy.Subscriber(susp, String, self._on_summary, queue_size=2)
+
+    # GPS 记点/返航修正 + RGB 对齐状态（String latch 全量快照语义：
+    # 发布侧状态每次变化重发，迟到订阅也能拿到当前态）
+    def _on_home_gps(self, msg, i):
+        with self.lock:
+            self.state[i]["home_gps"] = msg.data
+
+    def _on_align(self, msg, i):
+        with self.lock:
+            self.state[i]["align"] = msg.data
 
     def _on_odom(self, msg, i):
         p = msg.pose.pose.position
@@ -592,6 +612,7 @@ class Agent(object):
                     "matched": st["matched"], "drop_done": st["drop_done"],
                     "first_drop_t": st["first_drop_t"],
                     "match_progress": st["match_progress"],
+                    "home_gps": st["home_gps"], "align": st["align"],
                 }
             grids = {i: g for i, g in self.grids.items() if g is not None}
             scores = dict(self.scores)

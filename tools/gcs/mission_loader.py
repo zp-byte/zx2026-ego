@@ -25,7 +25,7 @@ latched 发 /zx2026/mission/<id>。真机各机独立 ROS master，且指派要�
       drop: 1            # 参考平台号；-1=无参考
       marker: P1         # 平台 tag；可空
       takeoff: [0.0, 0.0, 1.5]   # 场地 ENU，z=hover 高度
-      cruise_z: 2.4      # 穿越区平飞高度（= competition_rules_real.yaml 同值）
+      cruise_z: 1.2      # 穿越区平飞高度（RECON latch 定谳：1.2 档）
       max_vel: 1.2       # 真机首飞保守档
       seq: 1
 
@@ -66,7 +66,7 @@ def load_assignment(path, drone_id):
                 "drop_point_id": int(m["drop"]),
                 "marker_id": str(m.get("marker", "")),
                 "takeoff": [float(c) for c in tk],
-                "cruise_z": float(m.get("cruise_z", 2.4)),
+                "cruise_z": float(m.get("cruise_z", 1.2)),
                 "max_vel": float(m.get("max_vel", 1.2)),
                 "mission_seq": int(m.get("seq", 1))}
     raise ValueError("missions.yaml 无 drone=%s 条目" % drone_id)
@@ -84,7 +84,7 @@ missions:
     drop: 1
     marker: P1
     takeoff: [0.5, -1.0, 1.5]
-    cruise_z: 2.4
+    cruise_z: 1.2
     max_vel: 1.2
     seq: 1
   - drone: 1
@@ -99,11 +99,11 @@ missions:
         assert a == {"drone_id": 0, "payload_type": "TYPE_A",
                      "box_color": "red", "drop_point_id": 1,
                      "marker_id": "P1", "takeoff": [0.5, -1.0, 1.5],
-                     "cruise_z": 2.4, "max_vel": 1.2, "mission_seq": 1}, a
+                     "cruise_z": 1.2, "max_vel": 1.2, "mission_seq": 1}, a
         ok[0] += 1
         # 默认值：takeoff/cruise_z/max_vel/seq/box_color/marker 缺省
         b = load_assignment(path, 1)
-        assert b["takeoff"] == DEFAULT_TAKEOFF and b["cruise_z"] == 2.4 \
+        assert b["takeoff"] == DEFAULT_TAKEOFF and b["cruise_z"] == 1.2 \
             and b["max_vel"] == 1.2 and b["mission_seq"] == 1 \
             and b["box_color"] == "" and b["marker_id"] == "", b
         ok[0] += 1

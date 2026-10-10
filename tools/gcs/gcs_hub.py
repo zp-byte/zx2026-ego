@@ -515,6 +515,9 @@ class Hub(object):
                         "first_drop_t": d.get("first_drop_t") if d else None,
                         "match_progress": d.get("match_progress") if d
                         else None,
+                        # GPS 记点/RGB 对齐状态（真机 String latch 透出）
+                        "home_gps": d.get("home_gps") if d else None,
+                        "align": d.get("align") if d else None,
                         # FR-2.8 推断相位
                         "inferred_phase": st["inferred_phase"],
                     }

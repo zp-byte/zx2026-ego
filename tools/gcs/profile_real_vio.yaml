@@ -8,10 +8,10 @@ send_hz: 5.0
 ids: [0]                      # 单 agent 带本机: 写 [DRONE_ID] 的值
 topics:
   odom: /vins/imu_propagate   # VINS 里程计输出
-  phase: null                 # 源码定论: multipoint 无状态机话题（multipointplan.cpp
-                              #   只发 takeoff_land/move_base_simple/goal/back_trigger/
-                              #   goal/planning_yaw）——任务终态判定走 MONITOR_TIMEOUT
-                              #   语义（盯飞超时=转 hub dash 人工盯）
+  phase: /drone_{id}/mission/phase   # mission_executor 直发 latch（real_fleet
+                              #   起 executor——2026-10-09 真机包接线；旧注
+                              #   「multipoint 无状态机话题」只对纯 Diff-planner
+                              #   线成立，ego 包任务终态有真源）
   battery: /mavros/battery
   fc: /mavros/state
   liveness:                   # TODO 现场定谳: rostopic hz，判据=恒频贯穿"悬停+任务"两态
@@ -21,12 +21,22 @@ topics:
   grid: null                  # TODO 真机建图上屏: grid_map/occupancy 是 PointCloud2
                               #   (需独立适配器), 与仿真 OccupancyGrid 不同型
   score: null                 # 真机无 scorekeeper——比分条显示 --
-  mission: null               # 真机任务指派 multipoint points.yaml 内部持有
-  match: null                 # TODO 真机类型匹配适配器（FR-1.8）
-  drop_done: null             # TODO 真机投放确认适配器（FR-1.8）
-  metrics: null               # 真机无 nav_metrics（FR-1.7 sim 专属）
+  mission: /zx2026/mission/{id}   # mission_loader 本地装订输出（latched）——
+                              #   hub 指派显示+FR-2.8 阶段推断的参考投放点
+  task: /zx2026/task_update   # 本机 mission_executor 直发（他机进度经 fleet
+                              #   回声补全，本桥 skip 自身防重复）
+  match: /drone_{id}/match/result   # type_match 同款节点直发（real_fleet 起）——
+                              #   识别输入靠 color_detector（camera:=true 才有流）
+  drop_done: /drone_{id}/payload/done   # payload_bridge 直发（drop_bridge:=false
+                              #   默认时无发布者=恒 null 语义，安全侧）
+  metrics: /drone_{id}/nav_metrics   # nav 直发 11 项（同 LIO 档；settings_real
+                              #   nav.metrics.enabled=true）
   match_progress: null        # TODO 真机匹配进度适配器（FR-1.9）
   grid_cloud: null            # TODO 现场定 VIO 累积点云 topic（FR-1.4 real 建图）
+  home_gps: /drone_{id}/home/status   # GPS 记起飞点/返航修正状态（gps_home_node
+                              #   String latch；2026-10-09 真机包接线）
+  align: /drone_{id}/align/status     # 下视 RGB 对齐状态（drop_align_node String
+                              #   latch；仅 camera:=true 时有发布者）
 
 # GCS 操作编排（gcs_ops.py）——真机命令模板（ssh 逐机执行）
 # 脚本语义（sh_files 源码核实）: takeoff/land = /px4ctrl/takeoff_land cmd 1/2；
@@ -43,7 +53,7 @@ topics:
 #   联调日仍跑 DEBUG 窗 ws 探针（ls -d ~/Diff*）一次复核。
 #   panic=逐机 ssh land，交付前必须 no-prop bench 实弹验证。
 ops:
-  status_file: /home/ubuntu/zx2026_defop_ws/run_logs/gcs_status.json
+  status_file: /home/ubuntu/zx2026_arena_ws/run_logs/gcs_status.json
   shell_prefix: ""
   cmds:
     trigger: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id} 'cd ~/Diff-planner && ./sh_files/pub_trigger.sh'"

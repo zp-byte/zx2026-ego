@@ -1,0 +1,87 @@
+%YAML:1.0
+# =============================================================================
+# vins_d435_ego.yaml — VIO 主档 VINS 配置（2026-10-09 换 VINS 定夺）
+# =============================================================================
+# 母版=fd250 fast_drone_250.yaml（D435 infra 双目 + PX4 IMU 实战档，真飞验证）。
+# 本文件差异：外参占位待标定 / save_image 0（不跑 loop_fusion 省 CPU/盘）/
+# 话题名对齐本包 d435.launch 与 mavros stock px4.launch。
+# 标定三件（首飞前必须过，README §VINS 标定清单）：
+#   ① infra 内参：vins_left/right.yaml 的 fx/fy/cx/cy 与
+#      rostopic echo /camera/infra1/camera_info 的 K 对核（K 顺序 fx/cx/fy/cy，
+#      官方 README 同法）；不符则按实测改
+#   ② body_T_cam0/1 外参：下方为 fd250 机体初值，本机安装不同必须重标
+#      （Kalibr cam-imu，或先 estimate_extrinsic:1 在线优化再固化为 0）
+#   ③ odom_tf 三参 yaw0_deg/ex0/ny0：VINS world 原点=初始化点、x 轴=初始化
+#      时机头朝向——yaw0=该朝向相对场地东向的角，ex0/ny0=起飞点场地 ENU 坐标
+# =============================================================================
+
+#common parameters
+#support: 1 imu 1 cam; 1 imu 2 cam: 2 cam
+imu: 1
+num_of_cam: 2
+
+imu_topic: "/mavros/imu/data_raw"
+image0_topic: "/camera/infra1/image_rect_raw"
+image1_topic: "/camera/infra2/image_rect_raw"
+
+output_path: "/home/ubuntu/vins_output"
+
+cam0_calib: "vins_left.yaml"
+cam1_calib: "vins_right.yaml"
+image_width: 640
+image_height: 480
+
+# Extrinsic parameter between IMU and Camera.
+estimate_extrinsic: 1   # 0 trust the matrices below / 1 optimize around initial guess（首飞标定期用 1，固化后改 0）
+
+body_T_cam0: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [ -3.0597105734350372e-02, -5.8927835241672222e-03,
+       9.9951442822153314e-01, 4.7302157421591003e-02,
+       -9.9953144626651957e-01, -6.5966180705800959e-04,
+       -3.0601515822914926e-02, 2.2936545354189812e-02,
+       8.3966960215681175e-04, -9.9998241981978753e-01,
+       -5.8698386963871307e-03, 6.1639590858913150e-02, 0., 0., 0., 1. ]
+body_T_cam1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [ -3.0069515759978405e-02, -5.7183785193312686e-03,
+       9.9953145241611574e-01, 4.4848038940723180e-02,
+       -9.9954744323873768e-01, -6.8446400583832556e-04,
+       -3.0073912680706305e-02, -2.7107742793766636e-02,
+       8.5611731814771996e-04, -9.9998341569054738e-01,
+       -5.6952091272581828e-03, 6.1794907739113121e-02, 0., 0., 0., 1. ]
+#Multiple thread support
+multiple_thread: 1
+
+#feature traker paprameters
+max_cnt: 150            # max feature number in feature tracking
+min_dist: 30            # min distance between two features
+freq: 10                # frequence (Hz) of publish tracking result
+F_threshold: 1.0        # ransac threshold (pixel)
+show_track: 0           # 发布跟踪图（rviz 用；1 会占 CPU，任务机关）
+flow_back: 1            # forward and backward optical flow
+
+#optimization parameters
+max_solver_time: 0.04   # max solver time (s), real-time guarantee
+max_num_iterations: 8
+keyframe_parallax: 10.0
+
+#imu parameters       The more accurate parameters you provide, the better performance
+acc_n: 0.1          # accelerometer measurement noise (fd250 PX4 IMU 实战档)
+gyr_n: 0.01         # gyroscope measurement noise
+acc_w: 0.001        # accelerometer bias random walk noise
+gyr_w: 0.0001       # gyroscope bias random walk noise
+g_norm: 9.805       # gravity magnitude
+
+#unsynchronization parameters
+estimate_td: 1                      # online estimate time offset camera vs imu（跨时钟域必需：D435 时钟 vs PX4 IMU）
+td: -0.05                           # initial value of time offset (s)
+
+#loop closure parameters
+load_previous_pose_graph: 0
+pose_graph_save_path: "/home/ubuntu/vins_output/pose_graph/"
+save_image: 0                       # fd250 为 1（loop_fusion 可视化）；本包不跑 loop_fusion，关

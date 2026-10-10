@@ -630,6 +630,8 @@ class NavNode:
         # 1-2 点（×cloud_mem_frames 6 帧 = 6-12）；树干在 3m 处单帧即数百点
         # 同格（480×270 深度云）。36 点远在细枝回波之上、远在树干之下。
         self._bh_rigid_pts = float(ev_bh.get("rigid_min_pts", 0))
+        # 足迹清除实证豁免（§4.13 2026-10-10）：3×3 内有实证/刚性格的格不抹。
+        self._bh_fp_exempt = bool(ev_bh.get("footprint_exempt_evidence", False))
         unc_bh = bh.get("uncertain", {}) or {}
         self._bh_unc_enabled = bool(unc_bh.get("enabled", True))
         self._bh_unc_vmax = float(unc_bh.get("v_max", 0.6))
@@ -919,7 +921,7 @@ class NavNode:
         rospy.loginfo("nav_node: drone %d closed_loop=%s max_vel=%.1f cruise_z=%.1f "
                       "tc=%s de=%s veto=%s metrics=%s soa=%s swg=%s swq=%s vo=%s "
                       "ph=%s hz=%s tip=%s vel_src=%s ha=%s ha_aim=%s ha_rearm=%.0f "
-                      "bh=%s rigid=%.0f ev_win=%.1f",
+                      "bh=%s rigid=%.0f ev_win=%.1f fp_exempt=%s",
                       self.drone_id, self.closed_loop, self.max_vel, self.cruise_z,
                       self.tc_enabled, self._de_enabled, self._vt_enabled,
                       self.metrics_enabled, self._soa_enabled, self._swg_enabled,
@@ -927,7 +929,8 @@ class NavNode:
                       self._ph_enabled, self._hz_enabled, self._tip_enabled,
                       self._vel_source, self._ha_mode, self._ha_aim,
                       math.degrees(self._ha_rearm),
-                      self._bh_enabled, self._bh_rigid_pts, self._bh_ev_window)
+                      self._bh_enabled, self._bh_rigid_pts, self._bh_ev_window,
+                      self._bh_fp_exempt)
 
     # ---- callbacks ------------------------------------------------------------
     def _on_wind(self, msg):
@@ -1328,9 +1331,24 @@ class NavNode:
                 if 0 <= cix < self.g_nx and 0 <= ciy < self.g_ny:
                     occ[ciy, cix] = True
         # 清空自机足迹（自机所在格必可通行；不确定格同清，防自格触发 O4）
+        # §4.13（2026-10-10）：原实现无条件抹 3×3（1.5m 方块）——机贴树到
+        # ~0.75m（树格 Chebyshev=1）时把该树从**自己的地图**上擦掉（实测被撞
+        # 树格占据 9.0s 后于 r_face 0.77m 被抹、0.6s 后撞拍；全 run 97 次
+        # 1→0 翻转仅这 2 次落 Chebyshev≤1，恰为 2 起碰撞）。与 bh_evidence_tier
+        # 的刚性格契约（"不受 window 遗忘"）冲突，并同抹 _gocc_unc（O4 输入）。
+        # footprint_exempt_evidence=true ⇒ 有实证（occ_s）/刚性格（_occ_rigid）
+        # 的格豁免；自机所在格恒清（保 A* 起点可通行）。
+        keep = None
+        if self._bh_fp_exempt:
+            keep = set(occ_s)
+            if self._bh_rigid_pts > 0.0:
+                keep |= self._occ_rigid
         ci, cj = self._g_to_cell(self.est_pos[0], self.est_pos[1])
         for iy in range(max(0, cj - 1), min(self.g_ny, cj + 2)):
             for ix in range(max(0, ci - 1), min(self.g_nx, ci + 2)):
+                if keep is not None and (ix, iy) in keep \
+                        and not (ix == ci and iy == cj):
+                    continue
                 occ[iy, ix] = False
                 unc[iy, ix] = False
         # 碰撞标记：撞树后强制占用，绕过足迹清除，避免 lidar 盲区循环碰撞

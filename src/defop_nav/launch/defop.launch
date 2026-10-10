@@ -19,8 +19,6 @@
        doc="三节点解释器（TF/torch 所在的 venv）；调试可用 python3"/>
   <arg name="goal_source" default="topic" doc="topic | waypoint_file"/>
   <arg name="waypoint_file" default="" doc="goal_source=waypoint_file 时的 yaml 航点文件"/>
-  <arg name="vae_device" default="$(optenv VAE_DEVICE cpu)" doc="VAE 推理设备 cuda:0|cpu|auto。默认取环境变量 VAE_DEVICE，未设则 cpu（=逐字节保留旧行为）。改用 optenv 而非写死：stack_nodes.launch 六路 include 本文件时只透传 drone_id，环境变量是唯一能同时覆盖跑批器与 stack 两条路径的注入点。
-      2026-10-01 上限重定后旧结论已推翻：单进程实测 VAE CPU 10.63ms(94Hz) / GPU 1.30ms(767Hz) / 显存仅 62MB；而 CPN 的 1024MB/进程上限本身就把 8GB 卡占满（6x1125+基线1252=8002），那才是「VAE 上卡把 CPN 打到 1.17Hz」的真因。CPN 上限收到 cpn_mem_cap_mb=512 后，6 CPN + 6 GPU-VAE 约 5542/8188，余三成，故默认允许上卡。"/>
 
   <group ns="drone_$(arg drone_id)">
     <!-- 线程帽（2026-09-29 T3）：多机同机堆叠时防 TF 线程池超订阅；真机单机单架不受影响。
@@ -43,7 +41,6 @@
       <rosparam file="$(find defop_nav)/config/defop_nav.yaml" command="load"/>
       <param name="drone_id" value="$(arg drone_id)"/>
       <param name="in_topic" value="/drone_$(arg drone_id)/depth/image_filled"/>
-      <param name="device" value="$(arg vae_device)"/>
     </node>
 
     <!-- 节点 3：CPN 碰撞预测 + 几何监督 + 死端逃逸（TF, hdf5 x3） -->

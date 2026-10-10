@@ -18,7 +18,6 @@ import numpy as np
 import rospy
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image, CameraInfo
-from std_msgs.msg import Float64MultiArray
 
 from zx2026_common import config as cfg
 from zx2026_common.scene import Scene
@@ -93,7 +92,11 @@ class CameraSimNode:
         info.width = self.cam_cfg["width"]
         info.height = self.cam_cfg["height"]
         info.distortion_model = "plumb_bob"
-        info.D = Float64MultiArray(data=[0.0] * 5)   # 大写：精简版消息无小写畸变字段
+        # D 须是 list：genpy float[] 校验拒收 Float64MultiArray——零订阅者时
+        # publish 不序列化故此前潜伏未炸（rospy "no subscribers → return"），
+        # 一旦出现订阅者（drop_align 视觉伺服）当场 SerializationError。
+        # depth_sim_node.py:459-465 同款定谳（2026-10-09 实测复现）。
+        info.D = [0.0] * 5
         info.K = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
         info.R = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
         info.P = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]

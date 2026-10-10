@@ -106,17 +106,6 @@ class VaeNode(object):
         device_param = str(rospy.get_param('~device', 'cpu'))
         if device_param == 'auto':
             device_param = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-        if device_param.startswith('cuda') and not torch.cuda.is_available():
-            rospy.logwarn('[defop_vae] device=%s 但 CUDA 不可用 -> 退 cpu',
-                          device_param)
-            device_param = 'cpu'
-        if device_param.startswith('cuda'):
-            # WSL/dxg 稳定性：6 进程共享单卡，按 CPN 的整机重启教训先限幅。
-            try:
-                torch.cuda.set_per_process_memory_fraction(0.15, 0)
-                rospy.loginfo('[defop_vae] torch 显存份额 15%%（6 进程共享）')
-            except Exception as _e:
-                rospy.logwarn('[defop_vae] 显存份额设置失败: %r', _e)
         weights = str(rospy.get_param(
             '~vae_weights',
             '~/DeFoP/src/planning/sevae/sevae/weights/seVAE_weights/seVAE_evo_LD_128.pth'))

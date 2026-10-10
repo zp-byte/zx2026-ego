@@ -2,11 +2,15 @@
   <!-- =============================================================================
        real_fleet.launch — 真机单机注入栈（2026-09-26，每机一份，id 参数各机不同）
        =============================================================================
-       定位：三桥一芯的"桥+芯"编排。官方栈（mavros / faster-lio / ekf / px4ctrl）
-       由 Diff-planner 的 sh_files 拉起，不在本文件管辖——本 launch 的前置判据：
-         rostopic hz /ekf/ekf_odom 活（LIO+EKF 就绪）
+       定位：三桥一芯的"桥+芯"编排。官方栈由 Diff-planner 的 sh_files 拉起，
+       不在本文件管辖。双档位（2026-10-09 换 VINS 定夺）：
+         VIO 主档（本文件默认）：mavros + realsense(D435 infra 双目) + VINS
+           + px4ctrl(run_ctrl_vio.launch)——前置判据：
+           rostopic hz /vins/imu_propagate 活（VINS 已初始化）
+         LIO 备档（一条命令回退）：odom_src:=/ekf/ekf_odom
+           cloud_src:=/laserMapping/cloud_registered cloud_frame:=world
        链路（全部 sim 同码零改动，只换输入源）：
-         /ekf/ekf_odom（LIO 局部系）
+         /vins/imu_propagate（VINS world，重力对齐，原点=VINS 初始化点）
            ├─ odom_tf → /drone_<id>/odom（ENU；nav/mission/agent 消费）
            ├─ cloud_adapter（四道滤+同帧变换）→ /drone_<id>/cloud
            └─ vel_bridge（vel_cmd ENU→局部系逆变换）→ /setpoints_cmd（px4ctrl；
@@ -26,9 +30,9 @@
   <arg name="yaw0_deg" default="0.0" doc="LIO 系 x 轴相对场地 ENU 东向的安装偏角（odom_tf/cloud_adapter/vel_bridge 三桥同源参数）"/>
   <arg name="ex0" default="0.0" doc="场地 ENU 原点平移（东）"/>
   <arg name="ny0" default="0.0" doc="场地 ENU 原点平移（北）"/>
-  <arg name="odom_src" default="/ekf/ekf_odom" doc="官方 EKF 融合输出（源码定谳；现场 rostopic list 复核）"/>
-  <arg name="cloud_src" default="/laserMapping/cloud_registered" doc="faster-lio 配准点云（2026-09-26 机上定谳：该 fork 输出带 /laserMapping 前缀；ekf 链同源带前缀恰好匹配）"/>
-  <arg name="cloud_frame" default="world" doc="cloud_adapter 输入帧：world=LIO 配准云（原行为）/camera=相机系云（D435 points，重投影到 LIO world 后再滤）"/>
+  <arg name="odom_src" default="/vins/imu_propagate" doc="VIO 主档=VINS IMU 传播高频 odom（换 VINS 定夺 2026-10-09；节点名 vins→相对名 imu_propagate 即此全名，与官方 run_ctrl_vio.launch 的 px4ctrl remap 逐字同源）。LIO 备档回退=odom_src:=/ekf/ekf_odom"/>
+  <arg name="cloud_src" default="/camera/depth/color/points" doc="VIO 主档=D435 深度点云（不依赖 LIO 配准云；MID360/LIO 可不起）。LIO 备档=cloud_src:=/laserMapping/cloud_registered"/>
+  <arg name="cloud_frame" default="camera" doc="VIO 主档=camera（D435 相机系云，经 odom 四元数重投影到 VINS world 再四道滤）。LIO 备档=cloud_frame:=world"/>
   <arg name="cam_tilt_deg" default="0.0" doc="D435 安装下俯角（度，下俯为正）；cloud_frame=camera 时生效"/>
   <arg name="cam_dx" default="0.0"/>
   <arg name="cam_dy" default="0.0"/>
@@ -38,6 +42,20 @@
   <arg name="missions" default="$(env HOME)/zx2026_ego_ws/tools/gcs/missions.yaml" doc="人工指派文件"/>
   <arg name="profile" default="$(env HOME)/zx2026_ego_ws/tools/gcs/profile_real_lio.yaml" doc="agent 档案（每机拷贝改 ids；stage 键见头部②）"/>
   <arg name="stage_local" default="false" doc="仅 1 号机置 true：本地跑全局阶段机；/zx2026/start 人工 rosservice call 触发"/>
+
+  <!-- GPS 锚定返航 + RGB 对齐 + 投放桥（2026-10-09 真机包扩展） -->
+  <arg name="gps_home" default="true" doc="GPS 记起飞点+返航目标修正（gps_home_node；mavros global_position 插件 stock px4.launch 全插件加载恒在跑）"/>
+  <arg name="gps_home_mode" default="replace" doc="executor 返航 pad 修正档：replace=GPS 目标接管（场景 pad 未实测装订时正确档）/correct=距原 pad 超 max_corr_m 拒用"/>
+  <arg name="gps_max_corr_m" default="5.0" doc="GPS 修正对场景 pad 的偏移告警/钳位（m）"/>
+  <arg name="drop_align" default="true" doc="下视 RGB 视觉伺服对齐（drop_align_node；仅 camera:=true 时拉起）"/>
+  <arg name="align_axes" default="top_fwd" doc="图像 v 轴朝向档（2026-10-10 正名）：top_fwd=顶边朝机头（旧名 d435_down 同义）/bottom_fwd=底边朝机头（旧名 sim 同义）——C100 装机后必核，接反=伺服反向"/>
+  <arg name="align_plane_z" default="0.05" doc="色盘顶面高度（z_cam=odom_z-此值；真机平台实际顶面赛前核对装订）"/>
+  <arg name="align_stale_s" default="0.6" doc="RGB 修正新鲜期（s），过期 executor 回退平台心"/>
+  <arg name="drop_bridge" default="false" doc="投放执行桥开关（机构接入前保持 false=executor 停在 DROP 安全侧）"/>
+  <arg name="drop_backend" default="serial" doc="auto=地面联调假应答（带弹飞行严禁）/serial=机构串口行协议"/>
+  <arg name="drop_port" default="/dev/ttyUSB0" doc="投放机构串口设备"/>
+  <arg name="drop_baud" default="115200" doc="投放机构串口波特率"/>
+  <arg name="drop_wait_timeout_s" default="15.0" doc="DROP 态等 /payload/done 超时自愈（s；0=关）。真机默认 15s：桥不开/桥死/回执丢自动走与 done 同一返航出口（错峰爬升回家）——原位悬停等人工=电池与 GPS 窗口双耗。桥开着时 serial 回执亚秒级，15s=10 倍裕度；要人工全程裁决置 0"/>
 
   <!-- 桥 1：odom 变换 LIO 局部系→ENU，out 话题直接对上 nav 的 ns+/odom（省 remap） -->
   <node pkg="arena_bridges" type="odom_tf.py" name="odom_tf" output="screen"
@@ -60,6 +78,10 @@
   <!-- 任务芯（sim 同码） -->
   <node pkg="arena_mission" type="mission_executor_node.py" name="executor" output="screen">
     <param name="drone_id" value="$(arg id)"/>
+    <param name="gps_home_mode" value="$(arg gps_home_mode)"/>
+    <param name="gps_max_corr_m" value="$(arg gps_max_corr_m)"/>
+    <param name="align_stale_s" value="$(arg align_stale_s)"/>
+    <param name="drop_wait_timeout_s" value="$(arg drop_wait_timeout_s)"/>
   </node>
 
   <!-- 任务指派装订（latched；指派文件人工维护，缺条目启动即失败不带错飞） -->
@@ -75,21 +97,45 @@
 
   <!-- 识别线（camera:=true 时启用）：通用 HSV 检测器，进 Image 出
        /drone_<id>/detected/{color,type,confidence}（type_match 消费契约）。
-       相机话题联调日 rostopic list 定谳后经 camera_topic 传入；首飞无相机
-       线保持 camera:=false，match 走 TIMEOUT/参考指派 fallback（sim 同码）。 -->
-  <arg name="camera" default="false" doc="下视相机识别线开关（vendor 相机话题定谳后置 true）"/>
-  <arg name="camera_topic" default="/drone_$(arg id)/camera/image_raw" doc="真机相机 sensor_msgs/Image 话题"/>
+       camera_topic 缺省已按 d435.launch 实发话题定谳（/camera/color/image_raw，
+       节点无 ns；旧缺省 /drone_<id>/camera/image_raw 是死话题——侦察
+       2026-10-09 抓出）。首飞无相机线保持 camera:=false，match 走
+       TIMEOUT/参考指派 fallback（sim 同码）。 -->
+  <arg name="camera" default="false" doc="下视识别线开关（C100 驱动 camera_down:=true 起后置 true）"/>
+  <arg name="camera_topic" default="/camera_down/image_raw" doc="下视 C100 sensor_msgs/Image（usb_cam camera_down.launch 实发定谳 2026-10-10；**与 real_d435.launch 同名 arg 默认必须同值**——pass_all_args 会用它覆盖此处默认，selftest L4 对质）"/>
+  <arg name="camera_vfov_deg" default="50.0" doc="C100 垂直视场角（解析式回退内参 f=(h/2)/tan(vfov/2)；规格书装订项，错 vfov=错米制偏移比例；标定后 camera_info 优先自动接管）"/>
   <node if="$(arg camera)" pkg="arena_sensor" type="color_detector_node.py"
         name="color_detector" output="screen">
     <param name="drone_id" value="$(arg id)"/>
     <param name="image_topic" value="$(arg camera_topic)"/>
   </node>
 
-  <!-- 投放执行桥（真实抛投机构接入后启用）：mission_executor 发
-       /drone_<id>/payload/command(UInt8)，等 /drone_<id>/payload/done(Bool)
-       ——sim 里 done 由 drop_simulator 假装；真机须接机构控制器的节点，
-       接口联调日定谳后落 arena_bridges（CLI 串口/GPIO）。缺桥=命令发无人收
-       done 永不来=executor 停在 DROP（安全侧失败，不误投）。 -->
+  <!-- GPS 锚定返航：起飞时记 home GPS（TAKEOFF 段窗口均值），DROP 段测
+       est-gps 刚性偏移发 /home/enu 修正目标；executor RETURN 入场换 pad
+       （判完成随 pad 跟随）。sim 无 mavros=恒 NO_FIX 静默待机零行为。
+       漂移率现场评估用 tools/gps_lio_compare.py。 -->
+  <node if="$(arg gps_home)" pkg="arena_bridges" type="gps_home_node.py"
+        name="gps_home" output="screen" args="--id $(arg id)"/>
+
+  <!-- 下视 RGB 视觉伺服对齐：色块质心像素误差→fx/fy+z 换 ENU 偏移→
+       /align/corr；executor _drop_hold 重拉优先取新鲜修正，释放门不变
+       （MATCH+nav arrived+tol）。仅 camera:=true 时有意义。输入=下视
+       C100（camera_down.launch 实发话题）；vfov 走解析式回退内参。 -->
+  <node if="$(eval arg('camera') and arg('drop_align'))"
+        pkg="arena_bridges" type="drop_align_node.py" name="drop_align"
+        output="screen"
+        args="--id $(arg id) --image-topic $(arg camera_topic)
+              --axes $(arg align_axes) --plane-z $(arg align_plane_z)
+              --vfov-deg $(arg camera_vfov_deg)"/>
+
+  <!-- 投放执行桥（RFL 立案缺口落地 2026-10-09）：payload/command(UInt8)
+       → 机构 → payload/done(Bool)。缺桥=executor 停在 DROP（安全侧失败，
+       不误投）——机构接入前保持 drop_bridge:=false。serial 档行协议
+       "DROP <u8>\n"/"OK"（payload_bridge_node docstring），联调日对质固件。 -->
+  <node if="$(arg drop_bridge)" pkg="arena_bridges" type="payload_bridge_node.py"
+        name="payload_bridge" output="screen"
+        args="--id $(arg id) --backend $(arg drop_backend)
+              --port $(arg drop_port) --baud $(arg drop_baud)"/>
 
 
   <!-- 桥 3：vel_cmd→/setpoints_cmd（px4ctrl CMD_CTRL 档；断链 0.5s→HOLD 定点）。

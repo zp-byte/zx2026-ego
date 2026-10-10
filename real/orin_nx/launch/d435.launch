@@ -37,5 +37,15 @@
     <param name="clip_distance" value="8.0"/>
     <param name="publish_tf" value="false"/>
     <param name="depth_module.emitter_enabled" value="1"/>
+    <!-- VIO 主档 infra 双目流（2026-10-09 换 VINS 定夺）：infra1/2 给 VINS
+         特征跟踪，640×480@15（fd250 分辨率保真 + 降流折中）；emitter 保持 on
+         ——散斑前后帧静态、实际利于特征跟踪，fd250 实战同款。realsense 2.3.2
+         参数名定谳：enable_infra1/2 + infra_width/height/fps（左右目共用）。
+         USB3 带宽增量 ~18MB/s，424×240 depth+color 同开仍宽裕。 -->
+    <param name="enable_infra1" value="true"/>
+    <param name="enable_infra2" value="true"/>
+    <param name="infra_width" value="640"/>
+    <param name="infra_height" value="480"/>
+    <param name="infra_fps" value="15"/>
   </node>
 </launch>

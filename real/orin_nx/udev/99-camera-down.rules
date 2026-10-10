@@ -1,0 +1,17 @@
+# 99-camera-down.rules — WHEELTEC C100 下视相机 udev 稳定软链（模板，2026-10-10）
+#
+# 为什么要这文件：机上 USB 设备多（D435 + C100 + …），/dev/videoN 编号随
+# 上电顺序漂移——launch 绑 N 迟早绑错机。udev 按设备身份发稳定软链
+# /dev/camera_down，camera_down.launch 的 video_device 绑软链不绑 N。
+#
+# 装订三步（现场一次）：
+#   1. lsusb 找 C100 行的 VID:PID（形如 ID abcd:1234）
+#   2. 替换下行 XXXX/yyyy 两处，拷入 /etc/udev/rules.d/
+#      sudo cp 99-camera-down.rules /etc/udev/rules.d/
+#      sudo udevadm control --reload-rules && sudo udevadm trigger
+#   3. 拔插一次 C100，确认 ls -l /dev/camera_down 出现
+#
+# ATTR{index}=="0" 只匹配采集节点（video4linux 每设备出两个 videoN，
+# 另一个是 metadata 节点，index 非 0）。
+# 本模板未装订时 VID:PID=XXXX/yyyy 不匹配任何设备，无害空转。
+SUBSYSTEM=="video4linux", ATTRS{idVendor}=="XXXX", ATTRS{idProduct}=="yyyy", ATTR{index}=="0", SYMLINK+="camera_down"
