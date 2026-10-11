@@ -94,6 +94,12 @@ class ColorDetectorNode:
             self.pub_type.publish(UInt8(data=NO_DET))
             self.pub_color.publish(UInt8(data=NO_DET))
             self.pub_conf.publish(Float32(data=0.0))
+            # T6（RECON 提速案 2026-10-11）：stale 哨兵沿——补「相机断→
+            # hit 清零→dwell_exhausted」因果链的对侧证据（与 unsupported
+            # encoding 拒帧告警合并后链路完整）。
+            rospy.logwarn_throttle(
+                5.0, "drone %d camera stale >%.2fs -> NO_DET sentinel",
+                self.drone_id, self.stale_s)
 
     def run(self):
         if not self._active:
