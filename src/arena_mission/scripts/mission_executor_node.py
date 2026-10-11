@@ -17,6 +17,7 @@ RECON（科目三颜色识别闭环）: 逐平台 巡航高度→平台上空 dr
         scan_dwell_s，bucket_scan_step 连续 n_frames 命中本机箱色即锁平台
         （selected_dp）；全扫无果重扫 max_scan_rounds 轮后 COLOR_UNRESOLVED。
 """
+import copy
 import math
 
 import rospy
@@ -205,6 +206,10 @@ class MissionExecutor:
         h = rules["heights"]
         self.takeoff_hover_z = float(h.get("takeoff_hover_z", 1.5))
         self.cruise_z = float(h.get("cruise_z", 2.5))
+        # L3（2026-10-11）：释放机 RETURN_PENDING 驻留层专键——只抬爬出悬停点，
+        # 不动 cruise_z（等待位/GOTO_HI/RETURN 全部仍走 cruise_z）。
+        # 0/缺省=回退 cruise_z 旧行为。
+        self.climbout_z = float(h.get("climbout_z", 0)) or self.cruise_z
         self.identify_z = float(h.get("identify_z", 1.2))
         self.drop_hover_z = float(h.get("drop_hover_z", self.identify_z))
         self.touchdown_z = float(h.get("touchdown_z", 0.12))
@@ -231,6 +236,29 @@ class MissionExecutor:
         self._cid_nframes = int(ci.get("n_frames", 3))
         self._cid_rounds = int(ci.get("max_scan_rounds", 2))
         self._cid_leg_timeout = float(ci.get("scan_leg_timeout_s", 45.0))
+        # ---- 区域搜索臂（2026-10-11 真机口径：官方只公布补给区周界，平台
+        # 位置不公布——drop_points=mower 搜索点阵，GOTO_HI 腿途中连续跑
+        # 同款 bucket 检测，n_frames 连拍自色即锁「当拍 odom=平台心」转降；
+        # 非末轮途经锚点不降，末轮退化回逐锚点悬停确认）。sim 规则无此键
+        # =恒 False=sim 零行为变更（区域搜索 sim A/B 另案）。
+        self._cid_region = bool(ci.get("region_search", False))
+        # ---- RECON 提速 L18 臂（2026-10-11 pilot，默认全关=基线环）----
+        # L1 exclusion_memory：整段 dwell 零命中+末拍高置信异色→本局排除；
+        # L8 nearest_first：起扫环序按当前位置水平距离升序；
+        # first_leg_exempt：起扫第一条 GOTO_HI 腿不吃腿计时器（含越林全程，
+        # T 臂两局 12/12 首腿 45s 整点系统性强断、断点不看剩余距离）。
+        self._cid_excl_mem = bool(ci.get("exclusion_memory", False))
+        self._cid_nearest_first = bool(ci.get("nearest_first", False))
+        self._cid_first_leg_exempt = bool(ci.get("first_leg_exempt", False))
+        self._cid_excl_min_conf = float(ci.get("exclude_min_conf", 0.9))
+        # ---- 白降循环治理 L26 臂（2026-10-11，L2+L6 强制合开，pilot 默认关）----
+        # L2 recon_holder_precheck：GOTO_HI 到位沿先查认领，被认领不降
+        #（免「降到底+settle+dwell 才发现被认领」的白降 15-25s/次）；
+        # L6 claim_ttl_s：认领 TTL——_fail 不清不广播（claim 泄漏：claims 只经
+        # done 滤除），失败机僵尸认领会把等待机吃满 90s×轮数；L2 放大该泄漏，
+        # 立案书判定必须合开 TTL。ttl=0 关闭。
+        self._cid_holder_precheck = bool(ci.get("recon_holder_precheck", False))
+        self._claim_ttl = float(ci.get("claim_ttl_s", 0.0))
         # SCAN 入场稳定门（P0-1 第二刀，run15' 法证）：GOTO_HI→GOTO_LO 在
         # d<drop_tol 即边飞边转下降，位置门（est 0.62/0.35）在摆动弧上被穿过
         # → MATCH/释放发生在未收敛摆动弧上（release x 全部偏东=来向过冲，
@@ -331,10 +359,15 @@ class MissionExecutor:
         self._nav_arrived = False     # nav 真值到位信号（arrive_gate 用）
         self._scan_until = 0.0
         self._scan_leg_t0 = 0.0
+        self._lock_dp = None                       # 区域锁存位 dp（锚点 copy）
+        self._sweep_state = bucket_select.new_state()
+        self._scan_excluded = set()   # L1 排除记忆：本局已确认异色平台 id
+        self._scan_first_leg = False  # 首腿豁免：仅起扫第一条 GOTO_HI 腿为 True
         self._sel_state = None
         # 同平台排队仲裁：规则口径每平台 2 箱 → 同色双机必锁同平台，按"先到先投"
         # 排队（他机已认领未完成 → 本机在平台侧偏移点+巡航高度避让等待）
         self._claims = {}          # drone_id → selected bucket_id（全部机）
+        self._claims_t = {}        # drone_id → 最近认领到达时刻（L6 TTL 用）
         self._done_set = set()     # 已完成投放的机（payload/done）
         self._nb_pos = {}          # drone_id → (x,y,z) 邻居真值位置（让位仲裁）
 
@@ -452,6 +485,7 @@ class MissionExecutor:
 
     def _on_other_claim(self, j, msg):
         self._claims[j] = msg.data
+        self._claims_t[j] = rospy.get_time()   # L6 TTL 时戳
 
     def _on_other_done(self, j, msg):
         if msg.data:
@@ -501,10 +535,19 @@ class MissionExecutor:
 
     def _bucket_holder(self, dp_id):
         """同平台占用者：已认领该平台且未完成投放的他机（先到先投仲裁）。
-        返回最小 drone_id 或 None。"""
+        返回最小 drone_id 或 None。L6（2026-10-11）：认领带 TTL——_fail 不清
+        不广播（claim 泄漏：claims 只经 done 滤除），失败机僵尸认领会把等待
+        机吃满 90s×轮数；超龄认领视为失效。物理层 low_occupant 仍双门兜底
+        （真机在台上慢投不受 TTL 影响）。ttl=0 关闭。"""
+        now = rospy.get_time() if self._claim_ttl > 0 else 0.0
         holder = None
-        for j, b in self._claims.items():
+        # list() 快照：_on_other_claim 在订阅线程插入新键会令 dict 迭代中途
+        # 扩容（先在缺陷，审查 w7wvwwh3d 定谳；首认领 ≤5 次/局，窗口 us 级）
+        for j, b in list(self._claims.items()):
             if b == dp_id and j != self.drone_id and j not in self._done_set:
+                if (self._claim_ttl > 0
+                        and now - self._claims_t.get(j, 0.0) > self._claim_ttl):
+                    continue
                 if holder is None or j < holder:
                     holder = j
         return holder
@@ -659,9 +702,15 @@ class MissionExecutor:
         self.state = "RETURN_PENDING"
         self._publish_phase("RETURN_PENDING")
         # 闭环模式爬升悬停点东偏 1.2m：同平台排队者（WAIT→下降柱）与本机
-        # 爬升柱物理错开，防"done 即放行"窗口的垂直交错相撞
+        # 爬升柱物理错开，防"done 即放行"窗口的垂直交错相撞。
+        # L3（2026-10-11 三路前置确认 wf_11601bcd）：驻留层抬到 climbout_z。
+        # 名义点位 hypot=1.2 对 low_occupant 谓词骑线，等待机 id2/3 的 sep
+        # 推挤会把释放机滑进 1.2m 谓词→同层 tie-break 只对高 id 等待机关门；
+        # 抬层后 dz=-1.2 恒非占用（免疫漂移）=done 即确定性放行，到达锥
+        # 东方位 hard push（峰值 v_app+5.6）同步解除。scene：爬出柱距最近
+        # 树干 8.5m（belt_x_max=20 产物），3.45 停机零冠柱重叠。
         if self._cid_enabled:
-            self._goto((self.drop[0] + 1.2, self.drop[1], self.cruise_z))
+            self._goto((self.drop[0] + 1.2, self.drop[1], self.climbout_z))
         else:
             self._goto((self.drop[0], self.drop[1], self.cruise_z))
         rospy.loginfo("drone %d return scheduled (%s) in %.1fs",
@@ -766,9 +815,27 @@ class MissionExecutor:
         n = len(self.scene.drop_points)
         start = self.drone_id % n if self.drone_id < n else (self.drone_id + n - 1) % n
         self._scan_order = [self.scene.drop_points[(start + k) % n] for k in range(n)]
+        # L8 最近优先（L18 臂 pilot 默认关）：环序改按当前位置水平距离升序。
+        # 同色对错台起扫设计在此自然弱化——对内两机出生位不同，最近台通常
+        # 异台；真同台汇聚由 WAIT_HI 串行仲裁兜底（T 臂 run2：freed ≤10s）。
+        if self._cid_nearest_first:
+            _o = self.odom
+            self._scan_order.sort(key=lambda d: (d.xyz[0] - _o[0]) ** 2 +
+                                                (d.xyz[1] - _o[1]) ** 2)
         self._scan_idx = 0
         self._scan_round = 0
         self._scan_mode = "GOTO_HI"
+        self._scan_first_leg = True   # 首腿豁免只覆盖起扫后第一条 GOTO_HI 腿
+        self._scan_excluded = set()   # L1 排除记忆随局重置
+        self._lock_dp = None          # 区域锁存位随局重置
+        self._sweep_state = bucket_select.new_state()  # 途中检测连拍重计
+        # RECON 提速案遥测 T4（2026-10-11，零行为变更）：起扫沿+总时长锚。
+        # 本案补丁一律 logwarn——loginfo 不上 roslaunch stdout（采集面定谳：
+        # run3_smoke.log executor 行 13/13 全 [WARN]）。
+        self._scan_t0 = rospy.get_time()
+        rospy.logwarn("drone %d RECON order=%s start_idx=%d rounds=%d",
+                      self.drone_id, [d.id for d in self._scan_order],
+                      start, self._cid_rounds)
         self._scan_leg_t0 = rospy.get_time()
         self._sel_state = bucket_select.new_state()
         bx = self._scan_order[0].xyz[0]
@@ -778,6 +845,9 @@ class MissionExecutor:
     def _scan_advance(self, skip_reason):
         """推进到下一扫描平台（全扫完→重扫或判失败）。"""
         self._scan_idx += 1
+        self._scan_first_leg = False  # 任何推进沿都终结首腿豁免
+        self._lock_dp = None          # 推进沿清锁存位（确认失败→下一锚点）
+        self._sweep_state = bucket_select.new_state()  # 途中连拍重计
         if self._scan_idx >= len(self._scan_order):
             self._scan_round += 1
             if self._scan_round > self._cid_rounds:
@@ -786,6 +856,24 @@ class MissionExecutor:
             self._scan_idx = 0
             rospy.logwarn("drone %d RECON round %d exhausted (%s), rescanning",
                           self.drone_id, self._scan_round, skip_reason)
+        # L1 排除记忆：越过本局已确认异色的平台。自色平台不可能入集合
+        # （det=自色不采集），跳查必有解；集合若病态全满则循环自然退化回
+        # 原环重访（自愈）。det=255/低置信不采集——相机病态时同样退化。
+        for _ in range(len(self._scan_order)):
+            nxt = self._scan_order[self._scan_idx]
+            if nxt.id not in self._scan_excluded:
+                break
+            rospy.logwarn("drone %d RECON skip excluded plat %d (%d excluded)",
+                          self.drone_id, nxt.id, len(self._scan_excluded))
+            self._scan_idx += 1
+            if self._scan_idx >= len(self._scan_order):
+                self._scan_round += 1
+                if self._scan_round > self._cid_rounds:
+                    self._fail("COLOR_UNRESOLVED")
+                    return False
+                self._scan_idx = 0
+                rospy.logwarn("drone %d RECON round %d exhausted (%s), rescanning",
+                              self.drone_id, self._scan_round, skip_reason)
         nxt = self._scan_order[self._scan_idx]
         self._scan_mode = "GOTO_HI"
         self._scan_leg_t0 = rospy.get_time()
@@ -798,8 +886,56 @@ class MissionExecutor:
         （同平台被占→WAIT_HI 避让等待，占用者完成后再降）。
         GOTO 腿带超时看门狗（plan_fail 类活锁兜底：跳平台继续扫）。"""
         dp = self._scan_order[self._scan_idx]
+        if self._cid_region and self._lock_dp is not None:
+            dp = self._lock_dp   # 锁存位几何接管（id 仍锚点：认领/审计/日志不变）
         if self._scan_mode in ("GOTO_HI", "GOTO_LO"):
-            if rospy.get_time() - self._scan_leg_t0 > self._cid_leg_timeout:
+            # 区域搜索：GOTO_HI 腿途中连续跑同款 bucket 检测（检测流全时
+            # 在发，SCAN 只是消费闸）——n_frames 连拍自色即途中锁定。锁存
+            # 误差=检测延迟×地速（3 帧@30fps、2m/s ≈ 0.2m）<< drop_tol；
+            # 途中锁定优先于腿计时器（找到平台的腿不许被 45s 帽弃掉）。
+            if (self._cid_region and self._scan_mode == "GOTO_HI"
+                    and self._lock_dp is None):
+                box_u8 = cfg.color_to_uint8(self.box_color)
+                self._sweep_state, sweep_dec = \
+                    bucket_select.bucket_scan_step(
+                        self.det_color, self.det_conf_c, box_u8,
+                        min_conf=self._cid_min_conf,
+                        n_frames=self._cid_nframes,
+                        state=self._sweep_state)
+                if sweep_dec == "LOCK":
+                    nd = copy.copy(dp)
+                    nd.xyz = [self.odom[0], self.odom[1], dp.xyz[2]]
+                    self._lock_dp = nd
+                    dp = nd
+                    self._scan_mode = "GOTO_LO"
+                    self._lo_stage = 0
+                    self._scan_leg_t0 = rospy.get_time()
+                    self._goto((dp.xyz[0], dp.xyz[1], self.identify_z))
+                    rospy.logwarn("drone %d RECON sweep-lock near plat %d "
+                                  "at (%.2f,%.2f) -> descending",
+                                  self.drone_id, dp.id,
+                                  dp.xyz[0], dp.xyz[1])
+                    return
+            # 单目标塌缩放宽（2026-10-11 烧穿三案定谳：L19a d3/L19b d1/L26 d3
+            # 同签名——L1 排除把环塌缩到唯一非排除目标后，45s 帽弃腿改指无替代
+            # 目标→同台三连烧穿轮数=COLOR_UNRESOLVED 75 分。唯一目标腿 3×：
+            # 慢行机到位收益>>弃腿收益；真卡滞仍受轮数上限+observe 双界兜底。
+            cap = self._cid_leg_timeout
+            if (self._scan_mode == "GOTO_HI"
+                    and len(self._scan_excluded) >= len(self._scan_order) - 1):
+                cap *= 3.0
+                rospy.logwarn_throttle(
+                    10.0, "drone %d RECON single-target collapse (%d/%d "
+                    "excluded): leg cap relaxed to %.0fs", self.drone_id,
+                    len(self._scan_excluded), len(self._scan_order), cap)
+            leg_over = rospy.get_time() - self._scan_leg_t0 > cap
+            # 首腿豁免（L18 臂）：起扫第一条 GOTO_HI 腿含越林全程，T 臂两局
+            # 12/12 在 45s 整点系统性强断（断点不看剩余距离）→ 首腿不吃计时
+            # 器；到位沿/推进沿终结豁免（本函数 arrival 处与 _scan_advance）。
+            if (leg_over and self._scan_first_leg and self._scan_mode == "GOTO_HI"
+                    and self._cid_first_leg_exempt):
+                leg_over = False
+            if leg_over:
                 rospy.logwarn("drone %d RECON leg %s to platform %d timeout, skipping",
                               self.drone_id, self._scan_mode, dp.id)
                 self._scan_advance("leg_timeout")
@@ -814,6 +950,22 @@ class MissionExecutor:
                     return
             if self._scan_mode == "GOTO_HI":
                 if d < self.drop_tol:
+                    self._scan_first_leg = False   # 到位沿终结首腿豁免
+                    # 区域搜索：非末轮锚点途经不降——覆盖靠途中检测的行
+                    # 覆盖（逐锚点下降 14×15-25s 预算不可行）；末轮退化
+                    # 回逐锚点悬停确认（巡航高度检不出的颜色兜底）。
+                    if (self._cid_region
+                            and self._scan_round < self._cid_rounds):
+                        self._scan_advance("wp_flythrough")
+                        return
+                    # L2（L26 臂 pilot 默认关）：到位沿先查认领——已被认领就不
+                    # 降（白降循环：降到底+settle+dwell 才在 SCAN 沿发现被认领，
+                    # 一次 15-25s）。L6 TTL 合开（L2 放大 claim 泄漏，立案书令）。
+                    if self._cid_holder_precheck:
+                        holder = self._bucket_holder(dp.id)
+                        if holder is not None:
+                            self._enter_wait(dp, "claimed by", holder)
+                            return
                     self._scan_mode = "GOTO_LO"
                     self._scan_leg_t0 = rospy.get_time()
                     # 分级下降：先到平台上空 1.2m 缓冲层，经 drop_mid_z 中继
@@ -867,6 +1019,10 @@ class MissionExecutor:
                 self._scan_mode = "SCAN"
                 self._scan_until = rospy.get_time() + self._cid_dwell
                 self._sel_state = bucket_select.new_state()
+                # T2（RECON 提速案 2026-10-11）：dwell 计时起点显影。
+                rospy.logwarn("drone %d RECON SCAN start plat %d dwell=%.1fs "
+                              "until=%.2f", self.drone_id, dp.id,
+                              self._cid_dwell, self._scan_until)
             elif rospy.get_time() - self._scan_leg_t0 > 10.0:
                 # 入场门诊断（run21 法证仪，行为零变更）：腿开始 10s 后
                 # 每 5s 打印各门状态——d1 独占平台 30s 仍锁不上，需要
@@ -888,6 +1044,14 @@ class MissionExecutor:
                               self.drone_id, dp.id)
                 self._scan_advance("wait_timeout")
                 return
+            # T3（RECON 提速案 2026-10-11）：等待期 5s 心跳——90s 等待窗内
+            # 此前零痕迹（进/出两行之间全盲），holder/lo_occ 只读查询。
+            rospy.logwarn_throttle(
+                5.0, "drone %d RECON WAIT_HI plat %d waited=%.0f/%.0f "
+                "holder=%s lo_occ=%s", self.drone_id, dp.id,
+                rospy.get_time() - self._scan_leg_t0,
+                self._cid_leg_timeout * 2, self._bucket_holder(dp.id),
+                self._low_occupant(dp))
             # 退出条件：认领者清空 且 低层占用者离开（让位型等待的退出，
             # 占用者 LOCK/完成/腿超时离开三者任一发生即放行）
             if self._bucket_holder(dp.id) is None \
@@ -932,9 +1096,35 @@ class MissionExecutor:
             self.pub_at_drop.publish(Bool(data=True))
             rospy.loginfo("drone %d RECON LOCK platform %d (%s) at (%.1f, %.1f)",
                           self.drone_id, dp.id, dp.color, dp.xyz[0], dp.xyz[1])
+            # T5（RECON 提速案 2026-10-11）：LOCK 沿带 t_recon——逐机 RECON
+            # 时长=T5−T4 时戳差，A/B 配对终点载体（原 loginfo 保留不动）。
+            rospy.logwarn("drone %d RECON LOCK plat %d round=%d t_recon=%.1fs",
+                          self.drone_id, dp.id, self._scan_round,
+                          rospy.get_time() - self._scan_t0)
             return
         if now >= self._scan_until:
             # 本平台 dwell 结束仍未锁定 → 下一平台；全扫完 → 重扫或判失败
+            # T1（RECON 提速案 2026-10-11）：推进沿证据行——判读三分：
+            # hit=0&det=异色=正常排除(喂 L1 门限)；hit≥n_frames&末拍翻=
+            # 末拍抖动(喂 L7 立项)；det=255=相机链断(对侧=T6 stale 哨兵)。
+            rospy.logwarn("drone %d RECON dwell_exhausted plat %d hit=%d/%d "
+                          "det=%d conf=%.2f round=%d idx=%d",
+                          self.drone_id, dp.id, self._sel_state["hit"],
+                          self._cid_nframes, self.det_color, self.det_conf_c,
+                          self._scan_round, self._scan_idx)
+            # L1 排除记忆采集（T1 判读第一支喂料）：整段 dwell 零命中+末拍
+            # 高置信异色 → 本局不再重访该台（T 臂实测 14/14 起皆此型，可省
+            # 已确认异色台强制重访 ≈40-90s）。det=255（相机链断）与低置信
+            # 不采集——病态检测退化为原环。
+            if (self._cid_excl_mem and self._sel_state["hit"] == 0
+                    and self.det_color != 255 and self.det_color != box_u8
+                    and self.det_conf_c >= self._cid_excl_min_conf
+                    and dp.id not in self._scan_excluded):
+                self._scan_excluded.add(dp.id)
+                rospy.logwarn("drone %d RECON exclude plat %d det=%d conf=%.2f "
+                              "(%d excluded)", self.drone_id, dp.id,
+                              self.det_color, self.det_conf_c,
+                              len(self._scan_excluded))
             self._scan_advance("dwell_exhausted")
 
     def _set_landing_armed(self, armed):

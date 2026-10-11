@@ -130,7 +130,7 @@ def test_deploy_files():
     assert p["topics"]["stage"] is None                    # 非 1 号机：回声门
     assert p["topics"]["mission"] == "/zx2026/mission/{id}"
     assert p["topics"]["metrics"] == "/drone_{id}/nav_metrics"
-    assert p["topics"]["liveness"] == ["/position_cmd"]
+    assert p["topics"]["liveness"] == ["/setpoints_cmd"]  # 09-27 定谳（桥 50Hz 直发）
     # launch 三桥同源参数挂点在文件里（防 launch 重排丢参数的回归）
     with open(os.path.join(WS,
                            "src/arena_bridges/launch/real_fleet.launch"),
@@ -144,27 +144,33 @@ def test_deploy_files():
 
 
 def test_real_venue():
-    """真场地两文件非默认值断言（用户口径 2026-09-26 定谳）。"""
+    """真场地两文件对质 GPS 派生数（2026-10-11 GPS 口径定谳）。
+
+    全量对质（size/起降 quad/pads/走廊/平台 gps↔xyz/fence/geofence）交给
+    venue_real_gen.check_deployed——派生数唯一入口，手改 ENU 数在此炸。
+    """
     import yaml
+    import venue_real_gen as g
     sc = yaml.safe_load(open(
         os.path.join(HERE, "scene_topology_real.yaml"), encoding="utf-8"))
-    dps = [list(dp["xyz"]) for dp in sc["drop_points"]]
-    assert dps == [[50.0, 0.0, 1.5], [50.0, 2.0, 1.5], [50.0, 4.0, 1.5]], dps
-    # 零树（真机占用=激光点云；forest 段混入=杨树林文件误装订）
-    assert not any(z.get("kind") == "forest" for z in sc["zones"])
-    # 栅格覆盖：venue 中心原点口径（g_x0=-size/2），须罩住 0..50 且边距 ≥5m
-    assert sc["venue"]["size"][0] >= 110 and sc["venue"]["size"][1] >= 110
-    fences = [o for o in sc["static_obstacles"] if o["kind"] == "fence"]
-    assert len(fences) == 4
     rl = yaml.safe_load(open(
         os.path.join(HERE, "competition_rules_real.yaml"), encoding="utf-8"))
+    g.check_deployed(WS, sc, rl)
+    # 高度链与真机专项（不随 GPS 换血变；1.5=释放悬停高）
     h = rl["heights"]
     assert h["drop_hover_z"] == 1.5 and h["identify_z"] == 1.9 \
-        and h["drop_mid_z"] == 1.70, h          # 用户口径：1.5=释放悬停高
-    assert h["cruise_z"] == 1.2 and h["flight_z_ceiling"] == 4.5
+        and h["drop_mid_z"] == 1.70, h
+    assert h["cruise_z"] == 2.4 and h["flight_z_ceiling"] == 4.5
     assert rl["time_limit_s"] == 1500           # 真机 25min（sim 压缩 180 勿带上机）
-    assert rl["rule"]["geofence"][2] == [50.35, 50.35]
     assert rl["rule"]["return_through_forest"] is False
+    # 区域搜索臂两键（review 2026-10-11 确认的回归洞：两消费方默认值与真机
+    # 意图相反——executor 缺键=False 退回逐锚点、type_match 缺键=True 拒尽
+    # MATCH；sim 档同步一次即静默回归，故非默认值断言必须钉死）
+    assert rl["color_id"]["region_search"] is True
+    assert rl["type_match"]["position_gate"] is False
+    # GPS 口径：gps 是唯一人工录入点（缺字段=退回 ENU 手改老路，拒收）
+    for dp in sc["drop_points"]:
+        assert dp.get("gps", {}).get("lon") and dp["gps"].get("lat"), dp["id"]
 
 
 def main():

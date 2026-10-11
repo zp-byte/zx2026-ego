@@ -153,19 +153,22 @@ s = yaml.safe_load(open(os.path.join(d, "sim_settings.yaml")))
 assert s["use_sim_time"] is False and s["closed_loop"]["drift_rate"] == 0.0 \
     and s["comms"]["enabled"] is True, "sim_settings.yaml 不是真机版！"
 PY
-python3 - <<'PY' && echo "   [ok] 真场地 scene/rules 挂点" || FAIL=1
-import yaml, os
+python3 - <<'PY' && echo "   [ok] 真场地 scene/rules 挂点（GPS 派生闸）" || FAIL=1
+import yaml, os, sys
 import zx2026_common.config as c
 d = c.pkg_config_dir()
+root = os.path.dirname(os.path.dirname(os.path.dirname(d)))
+sys.path.insert(0, os.path.join(root, "tools", "gcs"))
+import venue_real_gen as g
 sc = yaml.safe_load(open(os.path.join(d, "scene_topology.yaml")))
-dps = [list(dp["xyz"]) for dp in sc["drop_points"]]
-assert dps == [[50.0, 0.0, 1.5], [50.0, 2.0, 1.5], [50.0, 4.0, 1.5]], dps
-assert not any(z.get("kind") == "forest" for z in sc["zones"]), "真机场景不得带树"
 rl = yaml.safe_load(open(os.path.join(d, "competition_rules.yaml")))
 h = rl["heights"]
 assert h["drop_hover_z"] == 1.5 and h["identify_z"] == 1.9, h
 assert rl["time_limit_s"] == 1500, rl["time_limit_s"]
-assert rl["rule"]["geofence"][2] == [50.35, 50.35], rl["rule"]["geofence"]
+# 区域搜索臂两键（消费方默认值与真机意图相反，缺键=静默回归，机上闸必钉）
+assert rl["color_id"]["region_search"] is True, "region_search 丢键=RECON 退回逐锚点"
+assert rl["type_match"]["position_gate"] is False, "position_gate 须 false，true=0.8m 门拒尽 MATCH"
+g.check_deployed(root, sc, rl)   # 场地 ENU 全量对质 GPS 派生数（venue_gps→geo_enu）
 PY
 rospack find arena_bridges >/dev/null 2>&1 \
   && echo "   [ok] rospack 发现 arena_bridges" || FAIL=1

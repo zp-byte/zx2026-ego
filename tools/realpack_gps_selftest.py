@@ -21,6 +21,11 @@
       XML 可解析 + usb_cam_node + /dev/camera_down 软链；preflight ⑥
       指向 /camera_down/image_raw 且 encoding 探针与消费端白名单同源；
       消费端 to_bgr 拒帧门 / AXES_ALIAS 正名在位。
+  L6  docx 黄金 24 数 + 需求②③装订（2026-10-11 GPS 换血）：keyun3 周界
+      8 点+补给区 4 点×(lon,lat) 硬编码逐位比对 venue_gps.yaml（L3 只验
+      换算自洽，本层验「抄进库的数=官方原文」）；launch gps_home 默认开/
+      gps_home_mode 默认 replace/节点块在位；preflight ④；executor 读参/
+      订阅 /home/enu/RETURN 消费 _home_pad_apply。
 
 用法（须 ROS 环境）：
   source /opt/ros/noetic/setup.bash && source devel/setup.bash
@@ -249,12 +254,81 @@ def l5_c100_chain():
     check("real_fleet 下传 drop_wait_timeout_s", "drop_wait_timeout_s" in rfl)
 
 
+# ---- L6 docx 黄金 24 数 + 需求②③装订（2026-10-11 GPS 换血）---------------
+# 黄金数硬编码自桌面《比赛坐标》两 docx（0924 版共同表）。L3 验换算自洽，
+# 本层验「抄进库的数=官方原文」——venue_gps.yaml 转录回归的最后一道闸。
+# keyun3 12 点×(lon,lat)=24 三元组；keyun12 无消费方不入黄金锚。
+_GOLDEN_KEYUN3 = {
+    "perimeter": [
+        ((113, 42, 27.74), (33, 51, 56.63)),   # 1 ←起降区
+        ((113, 42, 28.09), (33, 51, 55.53)),   # 2 ←起降区
+        ((113, 42, 29.29), (33, 51, 55.36)),   # 3 ←起降区
+        ((113, 42, 28.36), (33, 51, 45.94)),   # 4
+        ((113, 42, 30.85), (33, 51, 42.99)),   # 5
+        ((113, 42, 35.32), (33, 51, 42.86)),   # 6
+        ((113, 42, 36.36), (33, 51, 56.12)),   # 7
+        ((113, 42, 29.29), (33, 51, 56.53)),   # 8 ←起降区
+    ],
+    "supply": [
+        ((113, 42, 33.32), (33, 51, 43.96)),   # S1
+        ((113, 42, 34.56), (33, 51, 44.39)),   # S2
+        ((113, 42, 34.66), (33, 51, 44.06)),   # S3
+        ((113, 42, 33.51), (33, 51, 43.77)),   # S4
+    ],
+}
+
+
+def l6_gps_golden():
+    print("[L6] docx 黄金 24 数 + 需求②③装订")
+    import yaml
+    vp = os.path.join(WS, "src", "zx2026_common", "config", "venue_gps.yaml")
+    v = yaml.safe_load(open(vp, encoding="utf-8"))["venue"]["keyun3"]
+    n = 0
+    for sec, raw in (("perimeter", "perimeter"), ("supply", "supply_zone")):
+        pts, gold = v[raw], _GOLDEN_KEYUN3[sec]
+        check("%s 点数=%d" % (sec, len(gold)), len(pts) == len(gold),
+              str(len(pts)))
+        for k, (glon, glat) in enumerate(gold):
+            got = pts[k]
+            n += 2
+            check("%s#%d lon=%s" % (sec, k + 1, glon),
+                  list(got["lon"]) == list(glon), str(got.get("lon")))
+            check("%s#%d lat=%s" % (sec, k + 1, glat),
+                  list(got["lat"]) == list(glat), str(got.get("lat")))
+    check("黄金三元组计数=24", n == 24, str(n))
+
+    # 需求②：起飞记 GPS——launch 默认开 + 节点块在位 + preflight ④ 探针
+    rfl = open(os.path.join(WS, "src", "arena_bridges", "launch",
+                            "real_fleet.launch"), encoding="utf-8").read()
+    check("launch gps_home 默认 true",
+          'name="gps_home" default="true"' in rfl)
+    check("launch gps_home 节点块在位",
+          'if="$(arg gps_home)"' in rfl and "gps_home_node.py" in rfl)
+    pf = open(os.path.join(REAL, "scripts", "preflight.sh"),
+              encoding="utf-8").read()
+    check("preflight ④ GPS fix 探针在位（warn 档）", "④ GPS fix" in pf)
+
+    # 需求③：投放后返出发点——replace 默认（launch 下行+executor 读参+消费）
+    check("launch gps_home_mode 默认 replace",
+          'name="gps_home_mode" default="replace"' in rfl)
+    mx = open(os.path.join(WS, "src", "arena_mission", "scripts",
+                           "mission_executor_node.py"), encoding="utf-8").read()
+    check("executor 读 gps_home_mode（默认 replace）",
+          '"~gps_home_mode", "replace"' in mx)
+    check("executor 订阅 home/enu（绑定处全句，防注释假 OK）",
+          'rospy.Subscriber(ns + "/home/enu", PoseStamped, '
+          'self._on_home_corr)' in mx)
+    check("executor RETURN 消费 _home_pad_apply",
+          "_home_pad_apply(self.pad" in mx)
+
+
 def main():
     l1_nodes()
     run_layer(l2_home_pad, "L2")
     run_layer(l3_venue, "L3")
     run_layer(l4_gcs_chain, "L4")
     run_layer(l5_c100_chain, "L5")
+    run_layer(l6_gps_golden, "L6")
     if FAILS:
         print("REALPACK GPS SELFTEST FAIL (%d): %s"
               % (len(FAILS), ", ".join(FAILS)))

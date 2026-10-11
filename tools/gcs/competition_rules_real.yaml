@@ -4,8 +4,11 @@
 # 部署：deploy_real.sh 拷机载换名 src/zx2026_common/config/competition_rules.yaml
 #（executor/nav 均 cfg.load 硬编码文件名）。WSL sim 跑 config/ 原文件，本文件
 # 不影响仿真一分。
-# 与 sim 版差异四处：time_limit 1500 / heights 真机链 / geofence 真场 /
-# return_through_forest false。其余块与 sim 逐字同源，改 sim 细则时同步。
+# 与 sim 版差异：time_limit 1500 / heights 真机链 / geofence 真场 /
+# return_through_forest false / color_id.region_search true+L18 三开 /
+# type_match.position_gate false（区域锁存位≠锚点，true=MATCH 全灭）。
+# ⚠ 从 sim 同步细则时严禁整块覆盖 color_id/type_match——两处默认值与
+# sim 相反，抹键=静默回归（三道闸 _test_real_chain/机上探针已钉，会炸）。
 # =============================================================================
 
 time_limit_s: 1500         # 真机规则原文 25 分钟=1500s（sim 压缩口径 180 勿带上机）
@@ -45,6 +48,24 @@ color_id:
   n_frames: 3
   max_scan_rounds: 2
   scan_leg_timeout_s: 45
+  # ---- 区域搜索臂（2026-10-11 用户定谳：投放平台是一个区域，在区域里面
+  # 搜寻——官方只公布补给区周界，平台位置不公布） -------------------------------
+  # drop_points=mower 搜索点阵（venue_real_gen 派生，scene_topology_real
+  # 14 锚点）：RECON 的 GOTO_HI 腿途中连续跑同款 bucket 检测，n_frames
+  # 连拍自色即锁「当拍 odom=平台心」（误差≈3 帧×地速 ~0.2m << drop_tol）
+  # 转降悬停确认；非末轮途经锚点不降（覆盖靠途中检测的行覆盖），末轮
+  # 退化回逐锚点悬停确认。sim 规则无此键=恒 False=sim 零行为变更
+  # （区域搜索的 sim A/B 另案立案）。
+  region_search: true
+  # ---- RECON 提速 L18 臂（sim 三臂终判 17 局：三开 5/5 过闸翻默认） --------
+  exclusion_memory: true   # L1：dwell 零命中+末拍高置信异色→本局排除不重访
+  exclude_min_conf: 0.9    # L1 采集置信门（T 臂实测异色确认 conf 0.93-0.94）
+  first_leg_exempt: true   # 首腿豁免：真机首腿=越场全程 ~390m@2m/s≈195s，
+                           # 45s 帽必强断（ego T 臂 12/12 同型）——真机几何下必开
+  # nearest_first 刻意不开（与 sim L18g 形态的唯一偏离，已记账）：L8 按距
+  # 离重排起扫序会撕碎 mower 行序=搜索带覆盖失效。真机腿长 ~31m@2m/s≈16s
+  # 对 45s 帽裕度 2.8×，且途中锁定优先于腿帽（找到平台的腿不被弃），
+  # L19a 烧穿机制（短腿+排除塌缩+45s 帽）在真机几何下不成立。
   settle_gate: true
   settle_window_s: 0.8
   settle_tol_m: 0.10
@@ -83,7 +104,10 @@ type_match:
   consecutive_frames: 3
   hover_timeout_s: 12.0
   unknown_tag_policy: ignore
-  position_gate: true
+  position_gate: false     # 区域搜索锁存位≠锚点 dp.xyz（可达半个格距），
+                           # 0.8m 位置门会拒尽 MATCH=释放链卡死。颜色权威
+                           # 链不变（min_conf 0.8+连拍；锁存沿已过同款门，
+                           # AT_DROP 悬停再确认一轮）
 
 # ---- 投放点 Tag 检测参数 ------------------------------------------------------
 tag_detection:
@@ -110,8 +134,10 @@ tiebreak: [total_score, completion_time, first_correct_drop_time]
 # ---- 合规监视（rule_monitor，P5：退赛条款） ----------------------------------
 rule:
   enabled: true
-  # 真场围栏网在 0/50 边界线上；内缘外扩 0.35（与 sim 同律：face+0.35）
-  geofence: [[-0.35, -0.35], [50.35, -0.35], [50.35, 50.35], [-0.35, 50.35]]
+  # 官方 8 点飞行区周界 ENU（venue_gps.yaml→geo_enu→venue_real_gen.py 派生，
+  # 2026-10-11 GPS 口径；判分口径=出多边形即 OOB，斜边不再用矩形外扩近似；
+  # 与 scene_topology_real 的四面 bbox fence 是两层：此管判分退赛、彼管反应推力）
+  geofence: [[-22.17, 19.03], [-13.17, -14.87], [17.67, -20.1], [-6.23, -310.34], [57.77, -401.24], [172.66, -405.24], [199.39, 3.31], [17.67, 15.94]]
   out_of_bounds_grace_s: 10.0
   ground_contact_z: 0.30
   unauthorized_landing_grace_s: 1.5

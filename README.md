@@ -195,6 +195,9 @@ python3 tools/gcs/gcs_ops.py --profile tools/gcs/profile_sim.yaml start &
 | W4 交付死亡 | plan 健康+cmd 活+机体冻（CG 零触发） | **未破案**，签名已归档，活体取证口诀在案 | 小概率方差 |
 | W5 围栏吸引子 | 云避障符号反转（四起"幻影墙"全是围栏顶楔死） | sign_fix | A/B 决定性，翻默认 |
 | 树枝 O1-O4 | 三连根因：围栏顶进建图带=全局封死（OOB）；反应层 hband 拉进地面点=悬停地板（landed 0）；包围枝云下 sign_fix 指令对消=cmd≈0 不动点（逃逸被吞）；另 collision recovery=false 碰一次永冻 | map_z_band 下限>围栏顶+ca_z_floor 地板+逃逸云推豁免+recovery 翻默认 | B 臂 3/3 满分 100、landed 6/6/6，反超无枝 A 臂 |
+| 蟹行残根法证 | 撞拍机头-被撞树方位差 63°-111° 全>半视场 43.5° ⇒ 反应层当拍失明（几何硬事实）；但被撞树格在 A* 栅格连续占据 7-9s ⇒ 「规划器知道≠用上」，病灶不在感知/地图侧 | 航向侧三刀（strict_scale/翻符号/断闭环）全判否；canonical=最优+第一刀验收 | 残根定位执行层航向；现役 canonical 下进入无边际收益区，本案收官 |
+| 足迹清除豁免（§4.13） | 自机 3×3 足迹清除在膨胀后不豁免刚性格 ⇒ 贴树 ~0.75m 时把被撞树从自己地图上抹掉（普查 97 次 1→0 翻转仅 2 次落贴身，恰为 2 起碰撞） | `footprint_exempt_evidence: true`：足迹清除保刚性格/实证格，自机所在格恒清 | A/B 机制判据决定性：贴身抹除 11→0、逐拍被抹率 6.75/3.90/8.46%→0%，零代价（RTF≥0.98、landed 18/18）；结果判据天花板；并否证「抹树=病因」 |
+| GPS 场地模型换血（真机线） | 真机包仍是 50×50 ENU 占位模型，官方已公布 GPS 周界（飞行区 8 点 221×423m/起降区 4 点/补给区 4 点）⇒ 目标点整体错一个量级 | `venue_gps.yaml`（官方原始数唯一真值）→ `geo_enu`（锚点=起降区 4 点均值）→ `venue_real_gen.py`（派生唯一入口：size/起降 quad/pads/走廊/fence/geofence/投放点阵，`--check` 为部署闸）；起飞记 GPS（gps_home_node）+ 返航 replace 修正（`_apply_home_corr`）已建成；黄金 24 数入 `realpack_gps_selftest` L6 | 场地模型全量 GPS 派生（手改 ENU 数过不了 --check）；平台不公布位置 ⇒ 投放语义改「补给区 mower 点阵 14 锚点+途中锁定」（`region_search: true` 挂真机档，sim 零行为变更）；sim A/B 另案 |
 
 每案方法论：活体/法证取证 → 根因（非现象）→ selftest 数值复现 → 同 seed A/B 矩阵 → 触发日志证据 → 翻默认 → 提交推送。
 
