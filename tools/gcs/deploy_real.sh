@@ -140,8 +140,8 @@ fi
 . /opt/ros/noetic/setup.bash 2>/dev/null || true
 . ~/zx2026_ws/devel/setup.bash
 FAIL=0
-python3 -c "from zx2026_common.msg import Mission, TaskUpdate" \
-  && echo "   [ok] zx2026_common.msg 可导入" || FAIL=1
+python3 -c "from zx2026_common.msg import Mission, TaskUpdate; from zx2026_common.srv import SetBoxColor" \
+  && echo "   [ok] zx2026_common.msg/srv 可导入" || FAIL=1
 python3 -c "from quadrotor_msgs.msg import PositionCommand" \
   && echo "   [ok] quadrotor_msgs（underlay 链）可导入" || FAIL=1
 python3 - <<'PY' && echo "   [ok] config 挂点=src 源树" || FAIL=1

@@ -6,6 +6,9 @@
 # 分层：[1] 传感器链=boot_zx.sh（烘epoch+9检+看门狗，boot_all 红线不含飞行栈）
 #       [2-5] odom_tf → 大脑层5节点 → GCS agent；[--full] px4ctrl
 # 配方来源：2026-09-27 逐条实弹验证序列原样搬入（brain_run/px4_run/gcs 干跑全绿）
+#         2026-10-12 路径统一（复核 C6）：tools/gcs 三处 ~/zx2026_arena_ws/
+#         →~/zx2026_ws/（=deploy_real.sh 上机布局+探针强制就位；本脚本 :18 的
+#         PYTHONPATH 同根，zx2026_ws 是唯一被两链共同保证的根）
 # 纪律：环境串整体抄勿拆——PYTHONPATH 必须带 :$PYTHONPATH 追加继承，否则洗掉 rospy；
 #       清场独立 ssh+全括号模式防 pkill 自杀雷；px4ctrl 活体证据看 rosout 非 stdout
 # 前提：机上 nv 免密 ssh（192.168.31.76）；DHCP 变动先改 D 或 provision --server
@@ -24,13 +27,13 @@ echo "===== [2/6] 应用层清场（独立 ssh，全括号模式防自杀雷）=
 ssh $D 'pkill -f "nav_node.p[y]" 2>/dev/null; pkill -f "mission_executor_node.p[y]" 2>/dev/null; pkill -f "mission_loader.p[y]" 2>/dev/null; pkill -f "type_match_node.p[y]" 2>/dev/null; pkill -f "vel_bridge.p[y]" 2>/dev/null; pkill -f "odom_tf.p[y]" 2>/dev/null; pkill -f "gcs_agent.p[y]" 2>/dev/null; pkill -f "px4ctrl_nod[e]" 2>/dev/null; sleep 1; echo CLEANED'
 
 echo "===== [3/6] odom_tf（ENU 对齐，ex0=1.0 ny0=23.0）====="
-ssh $D "$E nohup python3 ~/zx2026_arena_ws/tools/gcs/odom_tf.py --odom /ekf/ekf_odom --out /drone_0/odom --yaw0-deg 0 --ex0 1.0 --ny0 23.0 > /tmp/odom_tf.log 2>&1 & sleep 3; tail -2 /tmp/odom_tf.log"
+ssh $D "$E nohup python3 ~/zx2026_ws/tools/gcs/odom_tf.py --odom /ekf/ekf_odom --out /drone_0/odom --yaw0-deg 0 --ex0 1.0 --ny0 23.0 > /tmp/odom_tf.log 2>&1 & sleep 3; tail -2 /tmp/odom_tf.log"
 
 echo "===== [4/6] 大脑层五节点（PYTHONPATH 继承配方整体抄）====="
-ssh $D "$E nohup python3 ~/zx2026_ws/src/arena_bridges/scripts/mission_loader.py --id 0 --yaml ~/zx2026_arena_ws/tools/gcs/missions.yaml > /tmp/ml.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_mission/scripts/type_match_node.py > /tmp/tm.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_nav/scripts/nav_node.py > /tmp/nav.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_mission/scripts/mission_executor_node.py > /tmp/exe.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_bridges/scripts/vel_bridge.py --id 0 --odom /ekf/ekf_odom --yaw0-deg 0 --max-vel 1.2 --out /setpoints_cmd > /tmp/vb.log 2>&1 & sleep 8; for f in ml tm nav exe vb; do echo \"-- \$f:\"; tail -1 /tmp/\$f.log; done"
+ssh $D "$E nohup python3 ~/zx2026_ws/src/arena_bridges/scripts/mission_loader.py --id 0 --yaml ~/zx2026_ws/tools/gcs/missions.yaml > /tmp/ml.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_mission/scripts/type_match_node.py > /tmp/tm.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_nav/scripts/nav_node.py > /tmp/nav.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_mission/scripts/mission_executor_node.py > /tmp/exe.log 2>&1 & nohup python3 ~/zx2026_ws/src/arena_bridges/scripts/vel_bridge.py --id 0 --odom /ekf/ekf_odom --yaw0-deg 0 --max-vel 1.2 --out /setpoints_cmd > /tmp/vb.log 2>&1 & sleep 8; for f in ml tm nav exe vb; do echo \"-- \$f:\"; tail -1 /tmp/\$f.log; done"
 
 echo "===== [5/6] GCS agent（上行+fleet 下行入池）====="
-ssh $D "$E nohup python3 ~/zx2026_arena_ws/tools/gcs/gcs_agent.py --profile ~/zx2026_arena_ws/tools/gcs/profile_real_lio.yaml --fleet-bridge > /tmp/gcs_agent.log 2>&1 & sleep 4; tail -3 /tmp/gcs_agent.log"
+ssh $D "$E nohup python3 ~/zx2026_ws/tools/gcs/gcs_agent.py --profile ~/zx2026_ws/tools/gcs/profile_real_lio.yaml --fleet-bridge > /tmp/gcs_agent.log 2>&1 & sleep 4; tail -3 /tmp/gcs_agent.log"
 
 if [ "$FULL" = "1" ]; then
   echo "===== [6/6] px4ctrl（--full 无桨挂起档：RC 不开则驻 MANUAL_CTRL 等待，安全）====="
@@ -52,6 +55,6 @@ if [ "$FULL" = "1" ]; then
 fi
 
 echo "----- GCS hub（笔记本 Windows 侧手动起，复制下行）-----"
-echo 'py -3 //wsl.localhost/Ubuntu-20.04/home/ubuntu/zx2026_arena_ws/tools/gcs/gcs_hub.py --view log --ids 0 --port 9870 --fleet-hz 5 --bat-min 30 --logdir C:\Users\24882\AppData\Local\Temp\zx_gcs'
+echo 'py -3 //wsl.localhost/Ubuntu-20.04/home/ubuntu/zx2026_ego_ws/tools/gcs/gcs_hub.py --view log --ids 0 --port 9870 --fleet-hz 5 --bat-min 30 --status-file //wsl.localhost/Ubuntu-20.04/home/ubuntu/zx2026_ego_ws/run_logs/gcs_status.json --logdir C:\Users\24882\AppData\Local\Temp\zx_gcs'
 echo "=================================================="
 if [ "$FULL" = "1" ]; then echo "BOOT_FULL_RC=0 (full: 传感器链+大脑层+GCS+px4ctrl 挂起)"; else echo "BOOT_FULL_RC=0 (ground: 传感器链+大脑层+GCS，无飞行栈)"; fi

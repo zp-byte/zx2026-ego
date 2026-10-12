@@ -621,6 +621,10 @@ class MissionExecutor:
         if st == "P3_TAKEOFF" and self.state == "IDLE":
             self.takeoff_at = rospy.get_time() + self.drone_id * self.stagger
             self.state = "TAKEOFF_PENDING"
+            # 迁移即发（2026-10-12 复核 C0）：GCS 改色服务读本 phase 做 IDLE
+            # 门，只靠 1Hz 心跳有 ~1s 滞后窗——起飞开跑后仍可能被放行改色。
+            # 立即发把窗口压到 ms 级（loader 侧另有 1.2s 补偿复核兜底）。
+            self._publish_phase("TAKEOFF_PENDING")
             rospy.loginfo("drone %d takeoff scheduled in %.1fs", self.drone_id,
                           self.drone_id * self.stagger)
         elif st == "P4_EXECUTE" and self.state == "TAKEOFF_DONE":

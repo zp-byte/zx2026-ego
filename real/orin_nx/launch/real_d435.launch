@@ -33,8 +33,8 @@
   <arg name="odom_src" default="/ekf/ekf_odom"/>
   <arg name="server" default="192.168.31.100:9870"/>
   <arg name="max_vel" default="1.2" doc="首飞 1.2 保守档；sim 定谳 2.0 需现场复验后再抬"/>
-  <arg name="missions" default="$(env HOME)/zx2026_ego_ws/tools/gcs/missions.yaml"/>
-  <arg name="profile" default="$(env HOME)/zx2026_ego_ws/tools/gcs/profile_real_lio.yaml"/>
+  <arg name="missions" default="$(env HOME)/zx2026_ws/tools/gcs/missions.yaml" doc="=deploy_real.sh 上机布局（2026-10-12 审查坐实：旧 zx2026_ego_ws 值是仓库布局机上不存在，pass_all_args 会用它反向覆盖 real_fleet 的 C6 统一默认）"/>
+  <arg name="profile" default="$(env HOME)/zx2026_ws/tools/gcs/profile_real_lio.yaml" doc="同上，与 real_fleet.launch 同值纪律"/>
   <arg name="stage_local" default="false" doc="仅 1 号机 true"/>
   <arg name="camera" default="false" doc="下视识别线开关（首飞保持 false；C100 驱动见 camera_down）"/>
   <arg name="camera_down" default="false" doc="C100 下视相机驱动开关（camera_down.launch；preflight ⑥ 查其话题，须 true 才能过检）"/>

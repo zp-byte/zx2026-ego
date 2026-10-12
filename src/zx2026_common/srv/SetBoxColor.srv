@@ -1,0 +1,11 @@
+# SetBoxColor.srv — 每机投放物颜色动态指派（真机适配 2026-10-12）
+#
+# 提供方：tools/gcs/mission_loader.py（真机每机常驻的指派装订节点）。
+# GCS 起飞前经 ssh rosservice call 下发：service 校验色名+IDLE 门后改
+# box_color 并经 /zx2026/mission/<id> latch 重发——executor/type_match/
+# drop_align/agent(面板●色回显) 全链按既有"每条 Mission 重绑"语义自动生效。
+# 单发布者原地改色重发，不起第二实例（双 latch 发布者=晚订户竞态）。
+string color          # red/blue/yellow；空串=回退 missions.yaml 文件默认
+---
+bool ok               # false=色名非法或 phase 非 IDLE（起飞前锁定），msg 给原因
+string msg

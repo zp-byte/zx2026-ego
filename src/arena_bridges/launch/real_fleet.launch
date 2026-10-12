@@ -39,8 +39,8 @@
   <arg name="cam_dz" default="0.0" doc="相机在机体系安装平移 (m)"/>
   <arg name="server" default="192.168.31.100:9870" doc="GCS hub 地址（遥测上行+fleet 下行）"/>
   <arg name="max_vel" default="1.2" doc="vel_bridge 限幅（首飞 1.2 保守档）"/>
-  <arg name="missions" default="$(env HOME)/zx2026_ego_ws/tools/gcs/missions.yaml" doc="人工指派文件"/>
-  <arg name="profile" default="$(env HOME)/zx2026_ego_ws/tools/gcs/profile_real_lio.yaml" doc="agent 档案（每机拷贝改 ids；stage 键见头部②）"/>
+  <arg name="missions" default="$(env HOME)/zx2026_ws/tools/gcs/missions.yaml" doc="人工指派文件（=deploy_real.sh 上机布局；2026-10-12 复核 C6 统一，旧 zx2026_ego_ws 值是仓库布局机上不存在）"/>
+  <arg name="profile" default="$(env HOME)/zx2026_ws/tools/gcs/profile_real_lio.yaml" doc="agent 档案（每机拷贝改 ids；stage 键见头部②）"/>
   <arg name="stage_local" default="false" doc="仅 1 号机置 true：本地跑全局阶段机；/zx2026/start 人工 rosservice call 触发"/>
 
   <!-- GPS 锚定返航 + RGB 对齐 + 投放桥（2026-10-09 真机包扩展） -->

@@ -21,6 +21,7 @@
 """
 import math
 import os
+import re
 import struct
 import sys
 import time
@@ -32,9 +33,9 @@ from collections import deque
 from PySide6.QtCore import QObject, QPointF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QImage, QPainter, QPalette,
                            QPixmap, QPolygonF, QPen)
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFrame,
-                               QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
+                               QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPlainTextEdit, QPushButton, QVBoxLayout,
                                QWidget)
 
@@ -43,6 +44,10 @@ from gcs_ops import STAGES, Ops  # noqa: E402
 
 GRN, RED, YEL, DIM, RST = "#2ecc71", "#e74c3c", "#f39c12", "#555555", "#dddddd"
 CARD_BG = "#20242a"; PANEL_BG = "#12151a"; TXT = "#e8eaed"
+
+# 投放物箱色色卡（Mission.box_color 同源三色；比分条/COLOR 窗共用一份）
+COLOR_CN = {"red": "红", "blue": "蓝", "yellow": "黄"}
+COLOR_HEX = {"red": RED, "blue": "#3498db", "yellow": YEL}
 
 
 def qss():
@@ -543,8 +548,9 @@ class DebugDialog(QDialog):
             return
         self.running = True
         self.run_b.setEnabled(False)
-        # 调试运行期间占住面板忙位（PANIC 仍可用——急停永不设障）
-        self.panel.busy = True
+        # 调试运行期间占住面板忙位（PANIC 仍可用——急停永不设障）；
+        # busy=计数器（并发 owner 各自 +1/-1，布尔互踩会让先完成者放行其余）
+        self.panel.busy += 1
         self.panel._set_buttons(False)
         did = self.combo_d.currentData()
         name = self.combo_c.currentText()
@@ -569,11 +575,223 @@ class DebugDialog(QDialog):
     def _done(self, ok, msg):
         self.running = False
         self.run_b.setEnabled(True)
-        self.panel.busy = False
+        self.panel.busy = max(0, self.panel.busy - 1)
         self.panel._set_buttons(True)
         if msg:
             self.out.appendPlainText("[DBG] %s" % msg)
         self.out.appendPlainText("[DBG] finished ok=%s" % ok)
+
+
+class ColorDialog(QDialog):
+    """投放物颜色指派窗（起飞前锁定，2026-10-12）：每机一行 勾选+三色
+    下拉，按色分组下发（同色一批一次 dispatch）。确认闭环=比分条经
+    missions 上行自动回显（agent 订 /zx2026/mission/<id> latch→hub→
+    _set_score ●色），不新增回显代码。executor 仅 IDLE 绑定任务，飞行中
+    下发会被机载 service phase 门拒改——dispatch 侧另有 stage/phase 快速门。
+    「存为起栈默认」改 WSL 侧 tools/gcs/missions.yaml 单一真源（机上副本随
+    下次 deploy 同步；运行时指派与起栈默认是两件事）。仅富机适用——贫机
+    无 ssh/ROS 通道（先例：MAVLink 轨不做指派）。"""
+
+    COLORS = (("red", "红"), ("blue", "蓝"), ("yellow", "黄"))
+
+    def __init__(self, panel):
+        super().__init__()
+        self.panel = panel
+        self.running = False
+        self._armed_t = 0.0      # real 两段确认（对话框内自管，仿 on_cmd）
+        self.setWindowTitle("fei tu A GCS - 投放物颜色指派（起飞前）")
+        self.resize(460, 460)
+        self.rows = {}           # did -> (QCheckBox, QComboBox)
+        v = QVBoxLayout(self)
+        grid = QGridLayout()
+        grid.addWidget(QLabel("机"), 0, 0)
+        grid.addWidget(QLabel("现装订"), 0, 1)
+        grid.addWidget(QLabel("新颜色"), 0, 2)
+        ms = panel.last_missions or {}
+        for r, did in enumerate(panel.ops.ids, start=1):
+            cur = str((ms.get(did) or {}).get("box_color") or "")
+            cur_lbl = QLabel("●%s" % COLOR_CN[cur] if cur in COLOR_CN
+                             else "--")
+            cur_lbl.setStyleSheet("color: %s;" % COLOR_HEX.get(cur, DIM))
+            cb = QCheckBox("d%s" % did)
+            combo = QComboBox()
+            combo.addItem("—保持—", "")
+            for c, cn in self.COLORS:
+                combo.addItem("● %s" % cn, c)
+            order = [""] + [c for c, _ in self.COLORS]
+            if cur in order:
+                combo.setCurrentIndex(order.index(cur))   # 预填当前装订色
+            grid.addWidget(cb, r, 0)
+            grid.addWidget(cur_lbl, r, 1)
+            grid.addWidget(combo, r, 2)
+            self.rows[did] = (cb, combo)
+        v.addLayout(grid)
+        hint = QLabel(
+            "仅起飞前（IDLE）有效：起飞后下发会被机载拒改、回显不变。"
+            "下发后以比分条 ●色 回显为准（missions 1Hz 捎带，≤2s）。"
+            "机上重启回 missions.yaml 文件默认色，重指即可。")
+        hint.setStyleSheet("color: %s;" % YEL)
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        row = QHBoxLayout()
+        self.save_b = QPushButton("存为起栈默认")
+        self.save_b.setToolTip(
+            "改 WSL 侧 tools/gcs/missions.yaml（起栈默认单一真源）；"
+            "只写勾选机，块内只动 box_color 行+回读校验，其余逐字节不动")
+        self.save_b.clicked.connect(self.save_default)
+        row.addWidget(self.save_b)
+        self.send_b = QPushButton("下发")
+        self.send_b.clicked.connect(self.send)
+        row.addWidget(self.send_b)
+        v.addLayout(row)
+        self.out = QPlainTextEdit()
+        self.out.setReadOnly(True)
+        self.out.setMaximumBlockCount(300)
+        v.addWidget(self.out, 1)
+        self.stream = SignalStream()
+        self.stream.text.connect(self.out.appendPlainText)
+
+    # -- 下发 ----------------------------------------------------------------
+    def _collect(self):
+        """勾选且选了色的行 -> {color: [did...]}（同色一批，≤3 轮 dispatch）"""
+        groups = {}
+        for did, (cb, combo) in sorted(self.rows.items()):
+            c = combo.currentData()
+            if cb.isChecked() and c:
+                groups.setdefault(c, []).append(did)
+        return groups
+
+    def send(self):
+        if self.running or self.panel.busy:
+            # 互斥：与面板命令共享 ops 实例和 redirect_stdout（进程级全局，
+            # 并发=输出串流）——同 DebugDialog 纪律
+            self.out.appendPlainText("[COLOR] 面板命令执行中 — 稍后再试")
+            return
+        groups = self._collect()
+        if not groups:
+            self.out.appendPlainText("[COLOR] 未选机或未选色（—保持— 不下发）")
+            return
+        if self.panel.real and time.time() - self._armed_t > 5.0:
+            self._armed_t = time.time()          # 第一段：arm 5s
+            self.send_b.setText("CONFIRM 下发 ?")
+            self.send_b.setStyleSheet("background: %s; color: white;"
+                                      "font-weight: bold;" % YEL)
+            self.out.appendPlainText("[REAL] armed — 5s 内再次点击确认")
+            return
+        self._armed_t = 0.0
+        self.send_b.setText("下发")
+        self.send_b.setStyleSheet("")
+        if self.panel.real and QMessageBox.question(
+                self, "REAL CONFIRM",
+                "真机模式确认下发颜色指派 %s？" % groups) != QMessageBox.Yes:
+            self.out.appendPlainText("[REAL] cancelled")
+            return
+        self.running = True
+        self.send_b.setEnabled(False)
+        self.panel.busy += 1   # 计数器占位（同 DEBUG 窗注释）
+        self.panel._set_buttons(False)
+        ops = self.panel.ops
+
+        def fn():
+            import contextlib
+            ok = True
+            with contextlib.redirect_stdout(self.stream):
+                for color, ids in sorted(groups.items()):
+                    ok = ops.dispatch("color", ids=ids,
+                                      params={"color": color}) and ok
+            return ok
+
+        self.w = Worker(fn)
+        self.panel._workers.append(self.w)   # 保引用防 GC 杀运行中线程——
+        # 对话框可被 toggle_color 重建替换（无 Qt parent，仅 Python 引用），
+        # 只挂 self.w 会被 GC 连带销毁运行中 QThread=qFatal 全进程 abort
+        # （start_cmd/start_flow 同款 _workers 强引用表）
+        self.w.done.connect(self._done)
+        self.w.start()
+
+    def _done(self, ok, msg):
+        self.running = False
+        self.send_b.setEnabled(True)
+        self.panel.busy = max(0, self.panel.busy - 1)
+        self.panel._set_buttons(True)
+        if msg:
+            self.out.appendPlainText("[COLOR] %s" % msg)
+        self.out.appendPlainText(
+            "[COLOR] finished ok=%s — 以比分条 ●色 回显为准" % ok)
+        self.panel.poll()   # 立即拉一次快照，加速 ●色 回显
+
+    # -- 存为起栈默认 ----------------------------------------------------------
+    def save_default(self):
+        """勾选机颜色写进 WSL 侧 missions.yaml（起栈默认单一真源）。
+
+        行态改写：定位 `- drone: N` 块界，块内只替换 box_color 行（行内
+        注释保留），其余逐字节不动；改后 safe_load 回读校验，不过不落盘。
+        缺 box_color 行=结构异常，整体不写（不静默半写）。"""
+        import yaml
+        changes = {}
+        for did, (cb, combo) in sorted(self.rows.items()):
+            c = combo.currentData()
+            if cb.isChecked() and c:
+                changes[str(did)] = c
+        if not changes:
+            self.out.appendPlainText("[COLOR] 未选机/未选色 — 无可写")
+            return
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "missions.yaml")
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError as e:
+            self.out.appendPlainText("[COLOR] 读 %s 失败: %s" % (path, e))
+            return
+        cur = None
+        touched = set()
+        for i, ln in enumerate(lines):
+            m = re.match(r"^(\s*)-\s*drone:\s*(\d+)\s*(#.*)?$", ln)
+            if m:
+                cur = m.group(2)
+            if cur in changes:
+                m2 = re.match(r"^(\s*)box_color:\s*(\S+)\s*(#.*)?$", ln)
+                if m2:
+                    lines[i] = "%sbox_color: %s%s\n" % (
+                        m2.group(1), changes[cur],
+                        ("  %s" % m2.group(3)) if m2.group(3) else "")
+                    touched.add(cur)
+        missing = sorted(set(changes) - touched)
+        if missing:
+            self.out.appendPlainText(
+                "[COLOR] d%s 无 box_color 行，结构异常整体未写"
+                % ",".join(missing))
+            return
+        try:
+            doc = yaml.safe_load("".join(lines))
+            by_drone = {str(e.get("drone")): str(e.get("box_color", ""))
+                        for e in (doc or {}).get("missions") or []}
+            for d, c in changes.items():
+                assert by_drone.get(d) == c, "d%s 回读不符" % d
+        except Exception as e:
+            self.out.appendPlainText("[COLOR] 回读校验失败，未落盘: %s" % e)
+            return
+        try:
+            # 原子写（2026-10-12 复核 C2）：真源文件截断窗=中途死即半写/空
+            # 文件，6 机 loader 起栈全挂——tmp+fsync+os.replace 同 gcs_hub
+            # 状态文件先例。
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except OSError as e:
+            try:
+                os.unlink(path + ".tmp")
+            except OSError:
+                pass
+            self.out.appendPlainText("[COLOR] 写 %s 失败: %s" % (path, e))
+            return
+        self.out.appendPlainText("[COLOR] 已存起栈默认 %s -> %s"
+                                 % (changes, path))
+        self.panel.append("[COLOR] 起栈默认已更新: %s" % changes)
 
 
 class Panel(QMainWindow):
@@ -581,7 +799,7 @@ class Panel(QMainWindow):
         super().__init__()
         self.ops = ops
         self.selftest = selftest
-        self.busy = False
+        self.busy = 0  # 忙位计数器：命令/调试/对话框并发 owner 各自 +1/-1
         self._workers = []  # 运行中/已完成 Worker 的强引用（防 GC 杀线程）
         self._fired = False  # selftest 自动 START 只发一次（实例级）
         self.panic_armed_t = 0.0
@@ -658,9 +876,12 @@ class Panel(QMainWindow):
         # 地图窗状态（第 4 步 ③：建图上屏数据源 = poll 存的最新快照）
         self.grids = {}
         self.last_drones = {}
+        self.last_missions = {}   # poll 存的 missions（COLOR 窗预填现装订色）
         self.trails = {}      # did -> deque[(x, y, t)] 轨迹尾迹（地图窗用）
         self._map_dlg = None
         self._dbg_dlg = None  # 真机 ssh 调试窗（真机专用，sim 置灰）
+        self._color_dlg = None  # 投放物颜色指派窗（真机专用，sim 置灰）
+        self._color_avail = ops.cmds.get("color") is not None
 
         # 指令按钮排（空模板=禁用置灰：不可达命令不给点）
         btns = QHBoxLayout()
@@ -703,6 +924,17 @@ class Panel(QMainWindow):
                 "profile 未配置 ops.debug_ssh — 真机专用，sim 置灰")
         self.debug_btn.clicked.connect(self.toggle_debug)
         btns.addWidget(self.debug_btn)
+        self.color_btn = QPushButton("COLOR")
+        self.color_btn.setEnabled(self._color_avail)
+        if self._color_avail:
+            self.color_btn.setToolTip(
+                "投放物颜色指派窗（起飞前锁定；下发经 ops.cmds.color，"
+                "{host}=ops.hosts 逐机注入）")
+        else:
+            self.color_btn.setToolTip(
+                "profile 未配置 ops.cmds.color — 不可达，禁用")
+        self.color_btn.clicked.connect(self.toggle_color)
+        btns.addWidget(self.color_btn)
         root.addLayout(btns)
 
         # 日志窗
@@ -801,6 +1033,17 @@ class Panel(QMainWindow):
             self._dbg_dlg.raise_()
             self._dbg_dlg.activateWindow()
 
+    def toggle_color(self):
+        if not self._color_avail:
+            self.append("[COLOR] profile 未配置 ops.cmds.color — 不可用")
+            return
+        if self._color_dlg is None or not self._color_dlg.isVisible():
+            self._color_dlg = ColorDialog(self)
+            self._color_dlg.show()
+        else:
+            self._color_dlg.raise_()
+            self._color_dlg.activateWindow()
+
     # ---- 500ms 轮询快照 -----------------------------------------------------
     def _trails_add(self, drones, now):
         """轨迹采样：>15m 跳变=重启/重定位，清旧迹防跨场拉线。"""
@@ -856,9 +1099,8 @@ class Panel(QMainWindow):
             # 事件的真锁桶，Mission.drop_point_id（参考指派）仅兜底
             ptype = str(m.get("payload") or "")
             color = str(m.get("box_color") or "")
-            cname = {"red": "红", "blue": "蓝", "yellow": "黄"}.get(color, "")
-            ccol = {"red": RED, "blue": "#3498db",
-                    "yellow": YEL}.get(color, DIM)
+            cname = COLOR_CN.get(color, "")
+            ccol = COLOR_HEX.get(color, DIM)
             tlast = ptype[-1:] or "?"
             tname = {"A": "电池", "B": "药品", "C": "食品"}.get(tlast, tlast)
             seg = "d%s %s" % (did, escape(tname))
@@ -892,6 +1134,7 @@ class Panel(QMainWindow):
         self.grids = snap.get("grids") or {}
         sc = snap.get("scores") or {}
         ms = snap.get("missions") or {}
+        self.last_missions = ms   # COLOR 窗预填现装订色（每拍刷新）
         self._set_score(sc, ms, snap.get("tasks") or {},
                         snap.get("score_total") or {})
         self._trails_add(drones, now)
@@ -969,7 +1212,7 @@ class Panel(QMainWindow):
             return
         # panic 豁免：命令/调试运行中急停照发（急停永不排队设障；
         # 并发 redirect_stdout 只乱打印归属，不影响下发）
-        self.busy = True
+        self.busy += 1
         self._set_buttons(False)
         ops = self.ops
 
@@ -1033,7 +1276,7 @@ class Panel(QMainWindow):
         if self.busy:
             self.append("[START] REFUSED — 另一命令/调试运行中")
             return
-        self.busy = True
+        self.busy += 1
         self._set_buttons(False)
         ops = self.ops
         mt = ops.execute_timeout_s + 60.0
@@ -1051,7 +1294,7 @@ class Panel(QMainWindow):
                     "->monitor")
 
     def on_cmd_done(self, ok, msg):
-        self.busy = False
+        self.busy = max(0, self.busy - 1)
         self._set_buttons(True)
         self._fired = True  # selftest 只自动触发一次
         if msg:

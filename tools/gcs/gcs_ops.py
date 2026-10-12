@@ -67,6 +67,10 @@ class Ops(object):
         self.status_file = ops.get("status_file")
         self.shell_prefix = ops.get("shell_prefix", "")
         self.cmds = ops.get("cmds", {}) or {}
+        # 逐机 ssh 目标映射（did -> user@ip）：color 等逐机异主机模板用
+        # {host} 占位；缺映射该机 FAIL 可见（多机现场一张表管全部模板）
+        self.hosts = {str(k): str(v) for k, v in
+                      (ops.get("hosts") or {}).items()}
         self.stagger_s = float(ops.get("stagger_s", 2.0))
         self.retries = int(ops.get("retries", 2))
         g = ops.get("gates", {}) or {}
@@ -249,12 +253,15 @@ class Ops(object):
             time.sleep(1.0)
 
     # ---- 命令层 ------------------------------------------------------------
-    def _run(self, cmd, did=None, timeout=15.0):
+    def _run(self, cmd, did=None, timeout=15.0, params=None):
         # 用 replace 不用 .format：命令串（debug 拼装/模板）可能含字面花括号
         # （awk '{print $1}' 等），.format 直接 KeyError；也杜绝把已组装好的
         # 调试命令二次 format（{args} 里再有 {id} 被吞的暗坑）
         full = self.shell_prefix + cmd.replace(
             "{id}", did if did is not None else "")
+        if params:                     # {color} 等命名参数槽（同 replace 风格）
+            for k, v in params.items():
+                full = full.replace("{%s}" % k, str(v))
         try:
             p = subprocess.run(
                 ["bash", "-c", full], capture_output=True, text=True,
@@ -305,9 +312,11 @@ class Ops(object):
         self._ping_t, self._ping_r = now, r
         return r
 
-    def dispatch(self, action, ids=None):
+    def dispatch(self, action, ids=None, params=None):
         """模板含 {id}=逐机错峰+重试；不含=全局一次。返回全成与否。
 
+        params=命名参数槽（{color} 等，_run 逐键 replace；{host} 例外——
+        逐机异主机，由 ops.hosts 按 did 注入）。
         last_results 三态：None=未执行（模板缺失早退——调用方据实报
         「未送达」而非假成功）；[(None, ok)]=全局模板一次广播；
         [(id, ok), ...]=逐机明细。
@@ -323,6 +332,21 @@ class Ops(object):
                   "stage_controller auto-drives; real: fill ops.cmds.%s"
                   " / ops.mavlink)" % (action, action))
             return False
+        if action == "color":
+            # 起飞前锁定快速门（面板+CLI 双覆盖故放 dispatch；机载 service
+            # 另有 phase 硬门兜底）：阶段须未开跑、所选机 executor 须 IDLE
+            # ——否则机载拒收、回显不变，操作员会被「假成功」骗。
+            snap = self.read_status() or {}
+            st = snap.get("stage") or ""
+            if st not in ("", "P1_INIT", "P2_WAIT"):
+                print(" [color] REFUSED — stage=%s 已开跑（起飞前锁定）" % st)
+                return False
+            for i in use_ids:
+                ph = ((snap.get("drones", {}) or {}).get(i)
+                      or {}).get("phase")
+                if ph is not None and ph != "IDLE":
+                    print(" [color] d%s REFUSED — phase=%s 非 IDLE" % (i, ph))
+                    return False
         # 全局模板路径仅当无贫机参与（贫机须逐机定向；混队一律逐机混轨）
         if tmpl is not None and "{id}" not in tmpl and not any(
                 i in self.ml_ids for i in use_ids):
@@ -356,11 +380,23 @@ class Ops(object):
                 self.log("CMD", action=action, drone=i, rc=-1,
                          out="no-route")
             else:
+                t = tmpl
+                if "{host}" in t:
+                    h = self.hosts.get(str(i))
+                    if not h:
+                        print("  d%s %s no host mapping (ops.hosts[%s] 缺)"
+                              % (i, action, i))
+                        self.log("CMD", action=action, drone=i, rc=-1,
+                                 out="no-host", **(params or {}))
+                        self.last_results.append((i, False))
+                        all_ok = False
+                        continue
+                    t = t.replace("{host}", h)
                 for attempt in range(1, self.retries + 1):
-                    rc, out, err = self._run(tmpl, did=i)
+                    rc, out, err = self._run(t, did=i, params=params)
                     self.log("CMD", action=action, drone=i, attempt=attempt,
                              rc=rc, out=out.strip()[:200],
-                             err=err.strip()[:200])
+                             err=err.strip()[:200], **(params or {}))
                     if rc == 0:
                         ok = True
                         break
@@ -802,7 +838,7 @@ def main():
     ap.add_argument("action",
                     choices=["status", "preflight", "start", "takeoff",
                              "back", "land", "panic", "debug", "export",
-                             "recon", "gate", "deploy"])
+                             "recon", "gate", "deploy", "color"])
     ap.add_argument("debug_name", nargs="?", default=None,
                     help="debug 子命令名（无参=list 可用命令）")
     ap.add_argument("debug_args", nargs="?", default=None,
@@ -821,12 +857,22 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--yes", action="store_true",
                     help="real 模式危险命令确认（面板两段确认后代传）")
+    ap.add_argument("--color", choices=("red", "blue", "yellow"),
+                    default=None, help="color 动作的投放物颜色（必填）")
     ap.add_argument("--preflight-timeout", type=float, default=90.0)
     ap.add_argument("--monitor-timeout", type=float, default=None)
     args = ap.parse_args()
+    # debug_name/debug_args 是 debug 动作专属的位置参数；其余动作下出现
+    # 即用法错——静默吞掉曾让 `color 0,1` 把 "0,1" 吞进 debug_name 后按
+    # 全队下发（2026-10-12 复核 C1/C4/C7），多机现场=未点名机被写色。
+    if args.action != "debug" and (args.debug_name or args.debug_args):
+        ap.error("`%s` 动作不收位置参数 %r —— 选机用 --ids 0,1"
+                 % (args.action, args.debug_name or args.debug_args))
     ops = Ops(args.profile)
-    # real 模式保护：危险命令必须 --yes；panic 豁免（急停不设障碍）
-    REAL_DANGER = {"start", "takeoff", "back", "land", "deploy"}
+    # real 模式保护：危险命令必须 --yes；panic 豁免（急停不设障碍）。
+    # color 入列：改任务装订属写操作（虽非飞行动作），CLI 直发须显式 --yes；
+    # 面板走 COLOR 窗内自己的两段确认。
+    REAL_DANGER = {"start", "takeoff", "back", "land", "deploy", "color"}
     if ops.mode == "real":
         print("== REAL MODE (真机) profile=%s ==" % args.profile)
         if args.action in REAL_DANGER and not args.yes:
@@ -898,6 +944,13 @@ def main():
     if args.action == "export":
         ops.export(args.out)
         return
+    if args.action == "color":
+        if not args.color:
+            ap.error("color 动作必须给 --color red|blue|yellow")
+        ids = args.ids.split(",") if args.ids else ops.ids
+        ok = ops.dispatch("color", ids=ids, params={"color": args.color})
+        ops.log("DISPATCH", action="color", ids=ids, color=args.color, ok=ok)
+        raise SystemExit(0 if ok else 1)
     # takeoff / back / land：逐机命令
     ids = args.ids.split(",") if args.ids else ops.ids
     ok = ops.dispatch(args.action, ids=ids)
