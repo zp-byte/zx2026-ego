@@ -182,7 +182,15 @@ class Hub(object):
                     fleet[did] = {"pos": d.get("pos"),
                                   "vel": d.get("vel"),
                                   "yaw": d.get("yaw"),
-                                  "phase": d.get("phase")}
+                                  "phase": d.get("phase"),
+                                  # R2 任务仲裁信道（2026-10-12）：实际箱色/认领/
+                                  # 完成三事件随流——executor 的 selected_dp/
+                                  # payload/done/box_color 直订在真机各机独立
+                                  # master 上无发布方，唯一跨机链路=本桥。agent
+                                  # 侧转成本 master 话题（周期重发=认领 TTL 心跳）
+                                  "bc": d.get("bc"),
+                                  "dp": d.get("dp"),
+                                  "done": d.get("drop_done")}
                 snap = {"fleet_ts": round(now, 3), "stage": self.stage,
                         "fleet": fleet}
                 if self.tasks:

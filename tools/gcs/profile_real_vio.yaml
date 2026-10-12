@@ -29,6 +29,10 @@ topics:
                               #   识别输入靠 color_detector（camera:=true 才有流）
   drop_done: /drone_{id}/payload/done   # payload_bridge 直发（drop_bridge:=false
                               #   默认时无发布者=恒 null 语义，安全侧）
+  box_color: /drone_{id}/mission/box_color   # executor 直发 latch（R2 机队色表
+                              #   源=各机实际箱色广播；2026-10-12 真机端口）
+  claim_dp: /drone_{id}/mission/selected_dp  # executor LOCK 时 latch（R2 认领
+                              #   上行；hub fleet 下行转他机 master 复活仲裁栈）
   metrics: /drone_{id}/nav_metrics   # nav 直发 11 项（同 LIO 档；settings_real
                               #   nav.metrics.enabled=true）
   match_progress: null        # TODO 真机匹配进度适配器（FR-1.9）
@@ -53,7 +57,7 @@ topics:
 #   联调日仍跑 DEBUG 窗 ws 探针（ls -d ~/Diff*）一次复核。
 #   panic=逐机 ssh land，交付前必须 no-prop bench 实弹验证。
 ops:
-  status_file: /home/ubuntu/zx2026_arena_ws/run_logs/gcs_status.json
+  status_file: //wsl.localhost/Ubuntu-20.04/home/ubuntu/zx2026_ego_ws/run_logs/gcs_status.json
   shell_prefix: ""
   cmds:
     trigger: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.1.10{id} 'cd ~/Diff-planner && ./sh_files/pub_trigger.sh'"

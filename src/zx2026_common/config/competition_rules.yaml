@@ -134,8 +134,11 @@ color_id:
   recon_holder_precheck: false # L2：判毙（检查时机错位，无增量价值）
   claim_ttl_s: 0               # L6：未获检验（本局零僵尸）；合法认领最长 52s，代码保留门控
   # ---- RECON 提速 R2 臂（2026-10-12 立案，同日 5 局 A/B 收官翻默认）----------
-  # claim_color_gate：异色认领跳台。机队色表=任务分配律静态导出（与
-  # task_generator 同式），认领=他机机载识别广播——不消费 dp.color（sim 特权）。
+  # claim_color_gate：异色认领跳台。机队色表=各机实际箱色广播（executor
+  # _on_mission 直发 /drone_<id>/mission/box_color，latched；sim 单 master 下
+  # 广播值=分配律值逐位等价，A/B 结论平移不受影响。真机人工指派可偏离 i%n
+  # 律——静态律推导已从 _foreign_claim 删除，广播=唯一权威），认领=他机
+  # 机载识别广播——不消费 dp.color（sim 特权）。
   # A/B 定谳（B 臂 5 局 vs A 池 6 局默认档）：DONE med 237→197.3s（−16.7%，
   # 线 −10%；5 局全部单局 ≤207.4）；5×满分/landed 6/6/RTF≥0.975/STALL 0/
   # Σcol 2/0/0/0/1；机制对质 12 跳台 12/12 全异色零误杀，t_recon d0 −38%/

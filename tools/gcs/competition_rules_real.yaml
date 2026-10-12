@@ -66,12 +66,25 @@ color_id:
   # 离重排起扫序会撕碎 mower 行序=搜索带覆盖失效。真机腿长 ~31m@2m/s≈16s
   # 对 45s 帽裕度 2.8×，且途中锁定优先于腿帽（找到平台的腿不被弃），
   # L19a 烧穿机制（短腿+排除塌缩+45s 帽）在真机几何下不成立。
-  # ---- R2 claim_color_gate（2026-10-12 sim A/B 收官：sim 已翻默认=true）------
-  # 异色认领跳台：色表=机队分配律导出、认领=他机机载识别广播，均合法情报。
+  # ---- R2 claim_color_gate（2026-10-12 sim A/B 收官翻默认；同日真机端口）----
+  # 异色认领跳台：色表=各机实际箱色广播（/drone_<j>/mission/box_color）——
+  # 真机指派是人工 mission_loader 文件可偏离分配律，静态律推导在真机必错，
+  # 广播值=唯一权威（sim 单 master 下广播值=分配律值逐位等价，A/B 结论
+  # 平移不受影响）。认领/完成/箱色/邻机位置四话题经 agent→hub fleet 下行
+  # 转本 master（真机各机独立 master，executor 直订他机话题原本无源），
+  # 周期重发=认领 TTL 心跳。
   # sim 定谳：DONE med 237→197.3s(−16.7%)、5×满分、12 跳台全异色零误杀。
-  # 真机暂 false——真机 margin 评估后再开（真机加锁/认领延迟与 sim 不同源）；
+  # 真机暂 false——信道已建成待真机多机 RECON margin 实测后翻 true；
   # 语义与 sim 全同（同代码）。
   claim_color_gate: false
+  # 认领 TTL=心跳语义（真机端口 2026-10-12）：fleet 下行周期重发持续刷新
+  # _claims_t，120s 只在「认领后重发静默 120s」时清僵尸——静默两源=链路
+  # 死亡（出 fleet 快照）∨ 机入终相停发（agent DP_RELEASE_PHASES 门：失败/
+  # 自愈返航机不发 done 也不清认领，照旧重发会被 5Hz 永久刷新堵死同色
+  # 伙伴；README §10 释放三径）。合法投放锁最长 ~45s（下降+对准+释放），
+  # 裕度 2.6×。sim 保持 0（单 master done 事件必达，无僵尸形态）。未开
+  # gate 时本键也生效于 holder 仲裁（WAIT_HI 白等 90s×轮数的泄漏防护）。
+  claim_ttl_s: 120
   settle_gate: true
   settle_window_s: 0.8
   settle_tol_m: 0.10

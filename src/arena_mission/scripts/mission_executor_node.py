@@ -259,17 +259,23 @@ class MissionExecutor:
         # 立案书判定必须合开 TTL。ttl=0 关闭。
         self._cid_holder_precheck = bool(ci.get("recon_holder_precheck", False))
         self._claim_ttl = float(ci.get("claim_ttl_s", 0.0))
-        # ---- RECON 提速 R2 臂 claim_color_gate（2026-10-12 立案，默认关=A 臂）----
-        # 异色认领跳台：机队色表由任务分配律静态导出（与 task_generator 同式
-        # payload_types[i % n_pt]→color_for_type），认领=他机机载识别的实际
-        # 产物（selected_dp 广播）——二者均不触碰「drop_point_id 仅作参考指派、
-        # 执行器不得据此导航」红线（不消费场景 dp.color=sim 特权元数据）。
+        # ---- RECON 提速 R2 臂 claim_color_gate（2026-10-12 立案，sim A/B 收官
+        # 翻默认；同日真机端口改造：色表源换实际箱色广播）----
+        # 异色认领跳台：机队色表=各机实际 Mission 箱色广播（/drone_<j>/mission/
+        # box_color，本机在 _on_mission 发布、他机订阅）。【2026-10-12 真机端口
+        # 定谳】初版按分配律 payload_types[i % n_pt] 静态推导——真机指派是人工
+        # mission_loader 文件（赛前按抽签/平台实况改），可偏离分配律，静态推导
+        # 在真机必错；sim 单 master 下广播值=分配律值逐位等价（task_generator
+        # 即按律发），A/B 结论平移不受影响。认领=他机机载识别的实际产物
+        # （selected_dp 广播）——均不触碰「drop_point_id 仅作参考指派、执行器
+        # 不得据此导航」红线（不消费场景 dp.color=sim 特权元数据）。
         # holder 异色→不等待/不降，_scan_advance 跳台（四局取证：每局 35-85s
         # 异色 WAIT_HI+白降+dwell 白扫，全在异色平台结构性复现）；holder 同色
         # →照旧等待（本台即我台）。SCAN 沿不设门：相机 LOCK 权威>机队情报。
-        # box_color 空或 scene 缺 payload_types → 门失效退化原行为。
+        # box_color 空（Mission 未达/回退失败）或 holder 色未知（广播未达）→
+        # 门失效退化原行为（保守：宁可白等不可误杀同色台）。
         self._cid_claim_gate = bool(ci.get("claim_color_gate", False))
-        self._fleet_color = None   # drone_id → box_color（懒建，分配律导出）
+        self._fleet_color = {}     # drone_id → 实际箱色（各机广播增量填充）
         # SCAN 入场稳定门（P0-1 第二刀，run15' 法证）：GOTO_HI→GOTO_LO 在
         # d<drop_tol 即边飞边转下降，位置门（est 0.62/0.35）在摆动弧上被穿过
         # → MATCH/释放发生在未收敛摆动弧上（release x 全部偏东=来向过冲，
@@ -392,6 +398,11 @@ class MissionExecutor:
         self.pub_crossed = rospy.Publisher(ns + "/mission/crossed_zone", Bool, queue_size=1, latch=True)
         self.pub_selected = rospy.Publisher(ns + "/mission/selected_dp", Int32,
                                             queue_size=1, latch=True)
+        # R2 机队色表源：本机实际箱色广播（latched）。发布点=_on_mission 绑定
+        # 后（含 GCS set_box_color 改色重发同路径）；真机经 agent→hub fleet
+        # 下行转他机 master，sim 单 master 直达。见 _foreign_claim docstring。
+        self.pub_box_color = rospy.Publisher(ns + "/mission/box_color", String,
+                                             queue_size=1, latch=True)
         self.pub_landing_armed = rospy.Publisher(ns + "/mission/landing_armed",
                                                  Bool, queue_size=1, latch=True)
         self.pub_task_update = rospy.Publisher("/zx2026/task_update", TaskUpdate,
@@ -418,6 +429,10 @@ class MissionExecutor:
                              lambda m, j=j: self._on_other_done(j, m))
             rospy.Subscriber("/drone_%d/odom" % j, Odometry,
                              lambda m, j=j: self._on_nb_odom(j, m))
+            # R2 机队色表：他机实际箱色广播（sim 直达；真机 agent fleet 下行
+            # 周期转本 master——latched 晚订户即得现值）
+            rospy.Subscriber("/drone_%d/mission/box_color" % j, String,
+                             lambda m, j=j: self._on_fleet_color(j, m))
         # GCS panic 通道（第 4 步 ②）：全局急停，全部 executor 各自进入 ABORT 终态
         rospy.Subscriber("/zx2026/abort", String, self._on_abort)
         # 比赛合规通道（P5 rule_monitor）：退赛裁决 → hover-lock 终态 RETIRED
@@ -502,6 +517,14 @@ class MissionExecutor:
         if msg.data:
             self._done_set.add(j)
 
+    def _on_fleet_color(self, j, msg):
+        # R2 机队色表增量填充：他机实际箱色广播。空串不收（=未装订/回退失败，
+        # 收进来会把「未知」变「同色」误杀同色台）；重复值幂等（真机 fleet
+        # 下行周期重发=心跳语义，同时刷新认领 TTL 时戳见 _on_other_claim）。
+        c = str(msg.data)
+        if c:
+            self._fleet_color[j] = c
+
     def _on_nb_odom(self, j, msg):
         p = msg.pose.pose.position
         self._nb_pos[j] = (p.x, p.y, p.z)
@@ -565,26 +588,17 @@ class MissionExecutor:
 
     def _foreign_claim(self, dp_id):
         """claim_color_gate 谓词：本平台被异色认领 → True（本台不可能收
-        本机箱色，等待/下降/绕飞全是白耗）。机队色表懒建——任务分配律
-        payload_types[i % n_pt]→color_for_type 与 task_generator 同式导出，
-        全部机可自算，零协议改动。认领经 _bucket_holder 同一 TTL/快照过滤
-        （TTL 过期/失败机认领不触发跳台）。box_color 空（ Mission 未达/回退
-        失败）恒 False——空串≠任何色，误判会把同色台跳掉。scene 缺
-        payload_types → 门失效退化原行为（logwarn 一次）。"""
+        本机箱色，等待/下降/绕飞全是白耗）。机队色表=各机实际箱色广播
+        （/drone_<j>/mission/box_color，latched；_on_fleet_color 增量填充）——
+        【2026-10-12 真机端口定谳】真机指派是人工 mission_loader 文件，可偏离
+        分配律，payload_types[i % n_pt] 静态推导在真机必错，故色表唯一权威=
+        广播的实际箱色；sim 单 master 下广播值=分配律值逐位等价（task_generator
+        按律发），A/B 结论平移不受影响。认领经 _bucket_holder 同一 TTL/快照
+        过滤（TTL 过期/失败机认领不触发跳台）。holder 色未知（广播未达，真机
+        fleet 桥断/滞后）→ 恒 False 不跳——保守：宁可白等不可误杀同色台。
+        box_color 空（Mission 未达/回退失败）恒 False——空串≠任何色。"""
         if not self._cid_claim_gate or not self.box_color:
             return False
-        if self._fleet_color is None:
-            try:
-                pts = self.scene.payload_types
-                n_pt = len(pts)
-                self._fleet_color = {
-                    i: self.scene.color_for_type(pts[i % n_pt])
-                    for i in range(self.scene.drone_count)}
-            except AttributeError:
-                self._fleet_color = {}
-                rospy.logwarn("drone %d claim_color_gate: scene lacks "
-                              "payload_types/drone_count, gate inert",
-                              self.drone_id)
         if not self._fleet_color:
             return False
         h = self._bucket_holder(dp_id)
@@ -596,6 +610,12 @@ class MissionExecutor:
             return
         self.mission = msg
         self.box_color = msg.box_color or self.scene.color_for_type(msg.payload_type)
+        # R2 机队色表源：广播本机实际箱色（latched；2026-10-12 落地，取代
+        # 上一版「异律指派警示」记账——彼时正解「claim 携带实际 box_color」
+        # 即本广播。真机指派=人工 mission_loader 可偏离分配律，色表唯一权威
+        # =各机实际箱色，静态律推导已从 _foreign_claim 删除。GCS set_box_color
+        # 改色经 Mission 重发同路径到达此处，latch 自动覆盖他机缓存）。
+        self.pub_box_color.publish(String(data=self.box_color))
         pads = self.scene.get_pads()
         if self.drone_id < len(pads):
             self.pad = pads[self.drone_id]

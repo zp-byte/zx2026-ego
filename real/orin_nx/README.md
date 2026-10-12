@@ -239,3 +239,66 @@ rigid_min_pts 等 8 组新键补齐，除 heading_align 外均为结构对齐键
   preflight ⑥ 指向 /camera_down/image_raw / executor DROP 超时自愈与 launch 下传）。
 - 下视 RGB 相机归属**已定谳（2026-10-10）**：WHEELTEC C100 独立下视（几何论据见
   §0）。现场遗留四件装订见 §2「C100 下视装订四件」。
+
+## 9. 每机投放物颜色指派（GCS，起飞前锁定；2026-10-12 三件）
+
+每机携带的投放物颜色决定去哪个同色平台投放——机载骨干是 `Mission.box_color`
+（executor 锁平台 / type_match 释放门 / drop_align 视觉伺服 / 面板●色回显
+全链既有消费）。本包新增的是**不改文件、不起第二实例**的 GCS 动态指派入口：
+
+- **面板**：COLOR 按钮 → 指派窗（每机一行 勾选+三色下拉，预填现装订色；
+  real 两段确认；「存为起栈默认」改 WSL 侧 missions.yaml 真源）。
+- **CLI**：`python3 gcs_ops.py --profile profile_real_lio.yaml color
+  --ids 0,1 --color red --yes`（**选机必须 `--ids`**——位置参数 `0,1`
+  是 debug 动作专属，写错会被拒；real 模式须 --yes，面板两段确认等价）。
+- **机载**：常驻 mission_loader 挂 `/mission_loader_<id>/set_box_color`
+  服务（SetBoxColor.srv）——校验色名+phase IDLE 门后经
+  `/zx2026/mission/<id>` latch 原地重发，四消费端按既有重绑语义自动生效。
+
+约束与语义：
+
+| 项 | 语义 |
+|---|---|
+| 锁定 | 仅 IDLE 可改：executor 仅 IDLE 绑定+service phase 门双保险；心跳未到（executor 未起/滞后）一律拒改；放行后 1.2s 补偿复核——起飞恰在窗内开跑则回滚旧色并 `ok: False`（executor 拒新色保旧色而 type_match/drop_align 无自保护，三口不一致=MATCH 门必失配，此为复核 C0 修复） |
+| 回显确认 | 下发成功后比分条 ●色 ≤2s 自动更新（agent 1Hz 捎带 missions）；**回显即真值** |
+| 重启回退 | 机上重启回 missions.yaml 文件默认色——面板●色如实回退显示，重指即可；要改默认走「存为起栈默认」+下次 deploy 上机 |
+| profile | `ops.cmds.color` ssh 模板（`{host}`=ops.hosts 逐机注入，多机必填）+ `ops.hosts` 映射 |
+| 边界 | 贫机（MAVLink 轨）不适用（无 ROS 通道）；任意指色对 R2 门安全——色表=各机实际箱色广播（§10），异律指派不再有失真形态（旧 i%n 律推导已删） |
+| 自检 | `python3 tools/gcs/mission_loader.py --selftest`（7 检，含色参纯逻辑）；部署后机上同命令可跑 |
+
+## 10. R2 任务仲裁信道（2026-10-12 真机端口；sim A/B −16.7% 平移件）
+
+sim 里六台 executor 同一 master，`selected_dp`（认领）/`payload/done`（完成）/
+`odom`（邻机位置）直订即达——同平台排队仲裁（WAIT_HI 让位）与 R2 异色认领跳台
+（claim_color_gate，A/B DONE med 237→197.3s）全部依赖这三股跨机流。**真机各机
+独立 master，这三股流原本无源=仲裁栈整体哑**。本端口把它们接进既有 GCS fleet
+桥，executor 代码零新增协议：
+
+| 话题 | 上行采集（agent 订本机） | 下行转发（agent 发本 master） | 消费方 |
+|---|---|---|---|
+| `/drone_<id>/mission/box_color`（新，latched） | executor `_on_mission` 直发实际箱色 | 周期重发他机箱色 → `/drone_<j>/mission/box_color` | `_fleet_color` 色表=R2 门色权威 |
+| `/drone_<id>/mission/selected_dp`（latched） | LOCK 时直发 | 周期重发 → 同名（终相机停发，见下） | `_claims` 认领仲裁 |
+| `/drone_<id>/payload/done`（上行不 latch，下行重发 latched） | payload_bridge 直发（仅 True；`drop_bridge:=true` 才起——**出厂默认关=done 腿无源**，DROP 走 15s 自愈返航且不发 done） | 周期重发 True → 同名 | `_done_set` 认领清账 |
+| `/drone_<id>/odom`（rate） | odom_tf ENU | 快照重建 → 同名 | `_nb_pos` low_occupant 物理兜底 |
+
+- **色表权威=实际箱色广播**：真机指派是人工 mission_loader 文件（§9，赛前按
+  抽签改），可偏离分配律——executor 的 `payload_types[i % n_pt]` 静态律推导
+  已删（sim 单 master 下广播值=律值逐位等价，A/B 结论平移不受影响）。
+  GCS §9 任意指色对 R2 门构造性安全。
+- **TTL=心跳语义**：下行周期重发持续刷新 `_claims_t`，`claim_ttl_s: 120`
+  （rules_real 新键）只在「认领后重发静默 120s」清僵尸——合法投放锁最长 ~45s
+  裕度 2.6×。sim 保持 0（单 master done 必达，无僵尸形态）。
+- **认领释放三径**（2026-10-12 提交前审查坐实补记）：① `payload/done` True
+  （需 `drop_bridge:=true`，出厂默认无源）；② 链路死亡机出 fleet 快照→重发
+  停→TTL 自清；③ 机入终相（RETURN_PENDING/RETURN/ABORT/RETIRED/DONE/
+  FAILED——失败/急停/投放自愈返航均不发 done 也不清认领）→ agent 停止周期
+  重发其 dp（`gcs_agent.py DP_RELEASE_PHASES` 门）→对端 TTL 自清。②③是
+  出厂默认下的实际释放路径；executor LOCK 后失败（MATCH_TIMEOUT×3 等）的
+  机若仍被周期重发，对端 `_claims_t` 会被 5Hz 永久刷新=同色伙伴永久堵台。
+- **保守失效**：色未知（广播未达）/box_color 空 → 门恒 False 不跳，宁可白等
+  不可误杀同色台；hub 断链=整桥哑=退化回端口前行为。
+- **前置**：hub 须 `--fleet-hz >0`（fleet 下行开着才有本信道；0=全哑安全侧）。
+- **gate 开关**：`competition_rules_real.yaml claim_color_gate` 现为 false——
+  信道已建成，真机多机 RECON margin 实测后翻 true（三道闸已钉 false+TTL 120）。
+- 自检：`python3 tools/gcs/_test_real_chain.py` [4/5][5/5] 钉 profile 两上行键
+  + rules 两键 + executor 源码四 token（广播在位/律推导已删）。

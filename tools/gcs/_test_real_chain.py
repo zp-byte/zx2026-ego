@@ -72,11 +72,14 @@ def test_fleet_downlink():
     logf = tempfile.mkstemp(suffix=".jsonl")[1]
     hub = Hub(["0", "1", "2"], 3.0, 0.05, 5.0, 5.0, logf, "log",
               fleet_hz=200.0)
-    # 上行遥测：d0 活、d2 不发（应被 link_lost 门剔除）
+    # 上行遥测：d0 活、d2 不发（应被 link_lost 门剔除）。d0 带 R2 仲裁三键
+    # （bc/dp/drop_done——审查 2026-10-12：改缝 drop_done→done 是本测试唯一
+    # socket 层全链要害缝，缺覆盖=任一侧改名静默断 R2 信道）
     hub.on_msg({"stage": "P2_WAIT",
                 "drones": {"0": {"pos": [1.0, 2.0, 0.5],
                                  "vel": [0.1, 0.0, 0.0], "yaw": 90.0,
-                                 "phase": "EXECUTE"},
+                                 "phase": "EXECUTE",
+                                 "bc": "red", "dp": 3, "drop_done": True},
                            "1": {"pos": [3.0, 4.0, 0.5], "vel": [0, 0, 0],
                                  "yaw": 0.0, "phase": "TAKEOFF"}},
                 "tasks": {"1": {"state": "LANDED", "payload": "TYPE_A",
@@ -91,6 +94,15 @@ def test_fleet_downlink():
     assert set(snap["fleet"].keys()) == {"0", "1"}, snap["fleet"].keys()
     assert snap["fleet"]["0"]["pos"] == [1.0, 2.0, 0.5]
     assert abs(snap["fleet"]["0"]["yaw"] - 90.0) < 1e-9   # 度口径透传
+    assert snap["fleet"]["0"]["bc"] == "red"
+    assert snap["fleet"]["0"]["dp"] == 3
+    assert snap["fleet"]["0"]["done"] is True   # 上行 drop_done → 下行 done
+    # phase 透传=agent 认领释放相位门（DP_RELEASE_PHASES）的输入缝
+    assert snap["fleet"]["0"]["phase"] == "EXECUTE"
+    # 缺省机三键=None（agent 侧「不发」分支，他机保守不跳）
+    assert snap["fleet"]["1"]["bc"] is None \
+        and snap["fleet"]["1"]["dp"] is None \
+        and snap["fleet"]["1"]["done"] is None
     assert snap["stage"] == "P2_WAIT"
     assert snap["tasks"]["1"]["state"] == "LANDED"
     # 下行兴趣声明才入池：未声明的上行连接不收（Handler 层语义，此处验池）
@@ -131,6 +143,10 @@ def test_deploy_files():
     assert p["topics"]["mission"] == "/zx2026/mission/{id}"
     assert p["topics"]["metrics"] == "/drone_{id}/nav_metrics"
     assert p["topics"]["liveness"] == ["/setpoints_cmd"]  # 09-27 定谳（桥 50Hz 直发）
+    # R2 任务仲裁信道上行两键（2026-10-12 真机端口：色表源=实际箱色广播，
+    # 认领/完成/箱色经 hub fleet 下行复活仲裁栈——键缺失=agent 不采=门哑）
+    assert p["topics"]["box_color"] == "/drone_{id}/mission/box_color"
+    assert p["topics"]["claim_dp"] == "/drone_{id}/mission/selected_dp"
     # launch 三桥同源参数挂点在文件里（防 launch 重排丢参数的回归）
     with open(os.path.join(WS,
                            "src/arena_bridges/launch/real_fleet.launch"),
@@ -141,6 +157,31 @@ def test_deploy_files():
                 "type_match_node.py",            # 释放门供给方（缺=AT_DROP 卡死）
                 "fleet_ready"):                  # stage P1 卡死人工解法在案
         assert tok in lx, tok
+    # R2 色表源源码钉（2026-10-12 真机端口）：实际箱色广播发布/订阅/增量表
+    # 在位；分配律静态推导已删——回潮=真机人工指派下色表必错（mission_loader
+    # 可自由指色，i%n 律与实指派无包含关系）
+    with open(os.path.join(WS,
+                           "src/arena_mission/scripts/mission_executor_node.py"),
+              encoding="utf-8") as f:
+        ex = f.read()
+    for tok in ("pub_box_color.publish", "/drone_%d/mission/box_color",
+                "_on_fleet_color", "self._fleet_color = {}"):
+        assert tok in ex, tok
+    assert "color_for_type(pts[i % n_pt])" not in ex
+    # 认领释放相位门钉（2026-10-12 提交前审查坐实）：TTL=心跳清不了失败/
+    # 返航存活机的僵尸认领（executor _fail/DROP 自愈不发 done 也不清认领，
+    # 5Hz 重发会永久刷新对端 _claims_t）——终相机停发 dp=done 无源
+    # （payload_bridge 出厂默认关）下的默认释放径。回潮=同色伙伴永久堵台
+    with open(os.path.join(HERE, "gcs_agent.py"), encoding="utf-8") as f:
+        ag = f.read()
+    for tok in ("DP_RELEASE_PHASES", "not in DP_RELEASE_PHASES"):
+        assert tok in ag, tok
+    # C0 改色服务 bc 准绳+处理互斥钉（审查坐实：1.2s 复核无准绳会制造镜像
+    # 半接受 executor=新/tm=dp=旧；无互斥并发回执串台）
+    with open(os.path.join(HERE, "mission_loader.py"), encoding="utf-8") as f:
+        ml = f.read()
+    for tok in ("mission/box_color", '_set_lock', 'bc["v"] == c'):
+        assert tok in ml, tok
 
 
 def test_real_venue():
@@ -168,6 +209,12 @@ def test_real_venue():
     # MATCH；sim 档同步一次即静默回归，故非默认值断言必须钉死）
     assert rl["color_id"]["region_search"] is True
     assert rl["type_match"]["position_gate"] is False
+    # R2 claim_color_gate 真机端口（2026-10-12）：色表=实际箱色广播（人工
+    # 指派可偏离分配律，静态律推导已在 executor 删除）+ 认领 TTL=心跳语义。
+    # gate 真机暂 false（margin 实测后翻），两键任一静默丢失=仲裁栈哑/僵尸
+    # 认领永久堵台，故钉死
+    assert rl["color_id"]["claim_color_gate"] is False
+    assert rl["color_id"]["claim_ttl_s"] == 120
     # GPS 口径：gps 是唯一人工录入点（缺字段=退回 ENU 手改老路，拒收）
     for dp in sc["drop_points"]:
         assert dp.get("gps", {}).get("lon") and dp["gps"].get("lat"), dp["id"]

@@ -39,6 +39,10 @@ topics:
                               #   识别输入靠 color_detector（camera:=true 才有流）
   drop_done: /drone_{id}/payload/done   # payload_bridge 直发（drop_bridge:=false
                               #   默认时无发布者=恒 null 语义，安全侧）
+  box_color: /drone_{id}/mission/box_color   # executor 直发 latch（R2 机队色表
+                              #   源=各机实际箱色广播；2026-10-12 真机端口）
+  claim_dp: /drone_{id}/mission/selected_dp  # executor LOCK 时 latch（R2 认领
+                              #   上行；hub fleet 下行转他机 master 复活仲裁栈）
   metrics: /drone_{id}/nav_metrics   # settings_real nav.metrics.enabled=true
                               #   → nav 直发 11 项；FR-1.7 碰撞/clearance 上屏
   match_progress: null        # TODO 真机匹配进度适配器（FR-1.9）
@@ -79,7 +83,7 @@ topics:
 #   多机现场按 IP 分配表重填并恢复 {id} 占位。server 字段=agent 上报目标
 #   （地面站 IP），仍留 TODO 联调日现场定。
 ops:
-  status_file: /home/ubuntu/zx2026_arena_ws/run_logs/gcs_status.json
+  status_file: //wsl.localhost/Ubuntu-20.04/home/ubuntu/zx2026_ego_ws/run_logs/gcs_status.json
   shell_prefix: ""
   cmds:
     trigger: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.31.76 'cd ~/Diff-planner && ./sh_files/pub_trigger.sh'"
@@ -87,6 +91,27 @@ ops:
     back: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.31.76 'cd ~/Diff-planner && ./sh_files/back.sh'"
     land: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.31.76 'cd ~/Diff-planner && ./sh_files/land.sh'"
     panic: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new nv@192.168.31.76 'cd ~/Diff-planner && ./sh_files/land.sh'"
+
+    # 每机投放物颜色指派（GCS COLOR 窗 / CLI color，起飞前锁定；2026-10-12）：
+    # 机上常驻 mission_loader 的 /mission_loader_<id>/set_box_color 服务校验
+    # 色名+phase IDLE 门后改 box_color 并经 /zx2026/mission/<id> latch 原地
+    # 重发——executor/type_match/drop_align/面板●色全链自动重绑（单发布者，
+    # 不起第二实例）。grep "ok: True" 把 service 拒改（非法色/非 IDLE）变成
+    # rc!=0=FAIL 可见+dispatch 自动重试；空色串=回退 missions.yaml 文件默认。
+    # {host}=ops.hosts 按 did 注入（逐机异主机，color 必走）；机上 ROS env=
+    # deploy overlay ~/zx2026_ws/devel（自动链 Diff-planner underlay）。
+    # source 用 setup.sh（POSIX）——机上登录 shell 是 zsh（boot_full 配方
+    # setup.zsh 铁证），setup.bash 的 bash 专属语法在 zsh 下 source 即挂、
+    # && 短路后 rosservice 根本不执行（2026-10-12 复核 C8，同 debug_cmds
+    # 注释纪律）。srv 类 zx2026_common 在 overlay devel 里，source 路径
+    # 不能退回 Diff-planner underlay。
+    # 机上重启回文件默认色——面板●色会如实回退显示，重指即可（ missions.yaml
+    # 真源在 WSL，"存为起栈默认"按钮更新它，随下次 deploy 上机）。
+    color: "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new {host} 'source ~/zx2026_ws/devel/setup.sh && rosservice call /mission_loader_{id}/set_box_color \"{color: {color}}\" | grep -q \"ok: True\"'"
+
+  # 逐机 ssh 目标（did -> user@ip）：color 模板 {host} 必填。单机现值：
+  hosts: {0: "nv@192.168.31.76"}   # 多机现场按 IP 分配表补全，如
+                                   # {0: "nv@192.168.31.71", 1: "nv@192.168.31.72", ...}
 
   # 贫机 MAVLink 轨（P0-② panic 双轨化，2026-09-24 落地）：机载零代码的
   # PX4+RTK 贫机无 ssh 通道，land/back/panic 经 gcs_mavlink_bridge.py

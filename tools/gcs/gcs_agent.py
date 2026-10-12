@@ -29,7 +29,18 @@ import time
 import rospy
 import yaml
 from nav_msgs.msg import Odometry, OccupancyGrid
-from std_msgs.msg import String, Bool, Float32MultiArray
+from std_msgs.msg import String, Bool, Float32MultiArray, Int32
+
+# 认领释放相位（2026-10-12 提交前审查坐实）：TTL=心跳语义只能清「链路死亡
+# 机」的僵尸认领——机在 LOCK 后失败（MATCH_TIMEOUT×3/COLOR_UNRESOLVED/
+# ABORT）或投放自愈返航时，executor 的 _fail/DROP 超时出口均不发 done 也不
+# 清认领，fleet 快照若照旧周期重发其 dp，对端 _claims_t 会被 5Hz 永久刷新、
+# TTL 永不触发=同色伙伴机被该平台永久堵死。故：处于下列终相（executor
+# _publish_phase 全集，皆=不再可能重试投放）的机，其 dp 停止周期重发 → 对
+# 端 claim_ttl_s 到点自清。未知/缺失相位照旧重发（保守：宁可多发不可漏
+# 发）。接收侧 latched 残值仅影响重启 executor（重播种子，TTL 兜底自清）。
+DP_RELEASE_PHASES = frozenset((
+    "RETURN_PENDING", "RETURN", "ABORT", "RETIRED", "DONE", "FAILED"))
 
 
 class Agent(object):
@@ -86,7 +97,10 @@ class Agent(object):
                 # FR-1.9 匹配过程可视化
                 "match_progress": None,
                 # GPS 记点/RGB 对齐状态（真机 gps_home/drop_align String latch）
-                "home_gps": None, "align": None}
+                "home_gps": None, "align": None,
+                # R2 任务仲裁上行（2026-10-12）：实际箱色/认领平台（hub fleet
+                # 下行转发他机 → executor 仲裁栈复活；sim 单 master 不走本桥）
+                "bc": None, "dp": None}
 
     # ---- ROS 采集 ----------------------------------------------------------
     def spin_ros(self):
@@ -123,6 +137,15 @@ class Agent(object):
             if self.tp.get("drop_done"):
                 rospy.Subscriber(self.tp["drop_done"].format(id=i), Bool,
                                  self._on_drop_done, i, queue_size=1)
+            # R2 任务仲裁上行（2026-10-12）：实际箱色/认领平台随流捎带——
+            # 真机各机独立 master，executor 直订他机话题无源，唯一信道=本桥。
+            # 两源均 latched（executor 直发），晚起 agent 订阅即得现值。
+            if self.tp.get("box_color"):
+                rospy.Subscriber(self.tp["box_color"].format(id=i), String,
+                                 self._on_box_color, i, queue_size=1)
+            if self.tp.get("claim_dp"):
+                rospy.Subscriber(self.tp["claim_dp"].format(id=i), Int32,
+                                 self._on_claim_dp, i, queue_size=1)
             if self.tp.get("metrics"):
                 rospy.Subscriber(self.tp["metrics"].format(id=i),
                                  Float32MultiArray, self._on_metrics, i,
@@ -334,6 +357,17 @@ class Agent(object):
             if st["first_drop_t"] is None:
                 st["first_drop_t"] = now
 
+    # ---- R2 任务仲裁上行（2026-10-12，随流捎带） ----------------------------
+    def _on_box_color(self, msg, i):
+        with self.lock:
+            # 空串归 None：未装订/回退失败=「未知」，他机侧保守不跳
+            self.state[i]["bc"] = str(msg.data) or None
+
+    def _on_claim_dp(self, msg, i):
+        with self.lock:
+            # 0=未锁定占位（executor _claims 回填语义），不上行
+            self.state[i]["dp"] = int(msg.data) or None
+
     def _on_metrics(self, msg, i):
         # 布局：0 碰撞 1 卡滞s 2 卡滞段 3 最长卡滞 4 翻转 5 距离 6 min_clear
         #       7 max_speed 8 sim_t 9 speed 10 clear
@@ -492,31 +526,51 @@ class Agent(object):
     def on_fleet_line(self, obj):
         now = rospy.get_rostime()
         # 邻居状态 → odom_from_<s>（为本 master 的每架机各发一份；sim 单
-        # master 全员直订 /drone_<j>/odom，不走本桥）
+        # master 全员直订 /drone_<j>/odom，不走本桥）。
+        # 【2026-10-12 R2 任务仲裁信道】真机各机独立 master，executor 仲裁栈
+        # 直订的 /drone_<j>/mission/selected_dp（认领）、/drone_<j>/payload/done
+        # （完成）、/drone_<j>/mission/box_color（实际箱色=R2 色表源）、
+        # /drone_<j>/odom（low_occupant 物理兜底）在本 master 均无发布方——
+        # 本桥按 fleet 快照周期重发复活之。周期性=认领 TTL 心跳（executor
+        # _claims_t 持续刷新；链路死亡→该机出 fleet 快照→重发停→TTL 自清
+        # 僵尸认领）；事件 pub latched=晚起/重启 executor 即得现值。done 只发
+        # True（终态幂等）；bc/dp 缺省不发（他机侧「未知」保守不跳）。
         fleet = obj.get("fleet") or {}
         for did, d in fleet.items():
             if did in self.ids:
                 continue
             pos = d.get("pos")
-            if not pos or len(pos) < 3:
-                continue
             v = d.get("vel") or [0.0, 0.0, 0.0]
             yaw = math.radians(float(d.get("yaw") or 0.0))
             half = yaw * 0.5
+            bc, dp, done = d.get("bc"), d.get("dp"), d.get("done")
             for me in self.ids:
-                m = Odometry()
-                m.header.stamp = now
-                m.header.frame_id = "world"
-                m.child_frame_id = "drone_%s" % did
-                m.pose.pose.position.x = float(pos[0])
-                m.pose.pose.position.y = float(pos[1])
-                m.pose.pose.position.z = float(pos[2])
-                m.pose.pose.orientation.z = math.sin(half)
-                m.pose.pose.orientation.w = math.cos(half)
-                m.twist.twist.linear.x = float(v[0])
-                m.twist.twist.linear.y = float(v[1])
-                m.twist.twist.linear.z = float(v[2])
-                self._fleet_pub(me, did).publish(m)
+                pubs = self._fleet_evt_pubs(me, did)
+                if pos and len(pos) >= 3:
+                    m = Odometry()
+                    m.header.stamp = now
+                    m.header.frame_id = "world"
+                    m.child_frame_id = "drone_%s" % did
+                    m.pose.pose.position.x = float(pos[0])
+                    m.pose.pose.position.y = float(pos[1])
+                    m.pose.pose.position.z = float(pos[2])
+                    m.pose.pose.orientation.z = math.sin(half)
+                    m.pose.pose.orientation.w = math.cos(half)
+                    m.twist.twist.linear.x = float(v[0])
+                    m.twist.twist.linear.y = float(v[1])
+                    m.twist.twist.linear.z = float(v[2])
+                    self._fleet_pub(me, did).publish(m)   # nav comms 契约（原语义）
+                    pubs["odom"].publish(m)               # executor _nb_pos（R2）
+                if bc:
+                    pubs["bc"].publish(String(str(bc)))
+                if dp is not None and str(d.get("phase") or "") \
+                        not in DP_RELEASE_PHASES:
+                    # 认领释放相位门：终相机（失败/返航/急停/完赛）停发 dp
+                    # →对端 TTL 自清（DP_RELEASE_PHASES 注释=完整机制）；
+                    # done 无源（payload_bridge 出厂默认关）时这是默认释放径
+                    pubs["dp"].publish(Int32(data=int(dp)))
+                if done:
+                    pubs["done"].publish(Bool(data=True))
         # 全局阶段机回声：仅本机无本地 stage 源时转发（profile topics.stage
         # 为 null）。1 号机跑 stage_controller 本地直发——回声会把滞后旧值
         # 倒灌回订户（阶段倒退竞态），必须跳过。
@@ -561,6 +615,24 @@ class Agent(object):
         if p is None:
             p = rospy.Publisher("/drone_%s/odom_from_%s" % (me, did),
                                 Odometry, queue_size=5)
+            self.fleet_pubs[key] = p
+        return p
+
+    def _fleet_evt_pubs(self, me, did):
+        """R2 任务仲裁四话题 pubs（懒建，单 fleet 线程内无竞态）。三个事件
+        pub latched（认领/完成/箱色——晚起或重启的 executor 订阅即得现值），
+        odom 不 latch（rate 话题，2Hz 级 fleet 快照节拍）。"""
+        key = (me, did, "evt")
+        p = self.fleet_pubs.get(key)
+        if p is None:
+            p = {"odom": rospy.Publisher("/drone_%s/odom" % did, Odometry,
+                                         queue_size=5),
+                 "bc": rospy.Publisher("/drone_%s/mission/box_color" % did,
+                                       String, queue_size=1, latch=True),
+                 "dp": rospy.Publisher("/drone_%s/mission/selected_dp" % did,
+                                       Int32, queue_size=1, latch=True),
+                 "done": rospy.Publisher("/drone_%s/payload/done" % did,
+                                         Bool, queue_size=1, latch=True)}
             self.fleet_pubs[key] = p
         return p
 
@@ -613,6 +685,9 @@ class Agent(object):
                     "first_drop_t": st["first_drop_t"],
                     "match_progress": st["match_progress"],
                     "home_gps": st["home_gps"], "align": st["align"],
+                    # R2 任务仲裁（2026-10-12）：箱色/认领随流；done 复用
+                    # drop_done（hub 侧转键名 done 下行）
+                    "bc": st["bc"], "dp": st["dp"],
                 }
             grids = {i: g for i, g in self.grids.items() if g is not None}
             scores = dict(self.scores)
