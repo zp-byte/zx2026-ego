@@ -66,6 +66,12 @@ color_id:
   # 离重排起扫序会撕碎 mower 行序=搜索带覆盖失效。真机腿长 ~31m@2m/s≈16s
   # 对 45s 帽裕度 2.8×，且途中锁定优先于腿帽（找到平台的腿不被弃），
   # L19a 烧穿机制（短腿+排除塌缩+45s 帽）在真机几何下不成立。
+  # ---- R2 claim_color_gate（2026-10-12 sim A/B 收官：sim 已翻默认=true）------
+  # 异色认领跳台：色表=机队分配律导出、认领=他机机载识别广播，均合法情报。
+  # sim 定谳：DONE med 237→197.3s(−16.7%)、5×满分、12 跳台全异色零误杀。
+  # 真机暂 false——真机 margin 评估后再开（真机加锁/认领延迟与 sim 不同源）；
+  # 语义与 sim 全同（同代码）。
+  claim_color_gate: false
   settle_gate: true
   settle_window_s: 0.8
   settle_tol_m: 0.10

@@ -259,6 +259,17 @@ class MissionExecutor:
         # 立案书判定必须合开 TTL。ttl=0 关闭。
         self._cid_holder_precheck = bool(ci.get("recon_holder_precheck", False))
         self._claim_ttl = float(ci.get("claim_ttl_s", 0.0))
+        # ---- RECON 提速 R2 臂 claim_color_gate（2026-10-12 立案，默认关=A 臂）----
+        # 异色认领跳台：机队色表由任务分配律静态导出（与 task_generator 同式
+        # payload_types[i % n_pt]→color_for_type），认领=他机机载识别的实际
+        # 产物（selected_dp 广播）——二者均不触碰「drop_point_id 仅作参考指派、
+        # 执行器不得据此导航」红线（不消费场景 dp.color=sim 特权元数据）。
+        # holder 异色→不等待/不降，_scan_advance 跳台（四局取证：每局 35-85s
+        # 异色 WAIT_HI+白降+dwell 白扫，全在异色平台结构性复现）；holder 同色
+        # →照旧等待（本台即我台）。SCAN 沿不设门：相机 LOCK 权威>机队情报。
+        # box_color 空或 scene 缺 payload_types → 门失效退化原行为。
+        self._cid_claim_gate = bool(ci.get("claim_color_gate", False))
+        self._fleet_color = None   # drone_id → box_color（懒建，分配律导出）
         # SCAN 入场稳定门（P0-1 第二刀，run15' 法证）：GOTO_HI→GOTO_LO 在
         # d<drop_tol 即边飞边转下降，位置门（est 0.62/0.35）在摆动弧上被穿过
         # → MATCH/释放发生在未收敛摆动弧上（release x 全部偏东=来向过冲，
@@ -551,6 +562,34 @@ class MissionExecutor:
                 if holder is None or j < holder:
                     holder = j
         return holder
+
+    def _foreign_claim(self, dp_id):
+        """claim_color_gate 谓词：本平台被异色认领 → True（本台不可能收
+        本机箱色，等待/下降/绕飞全是白耗）。机队色表懒建——任务分配律
+        payload_types[i % n_pt]→color_for_type 与 task_generator 同式导出，
+        全部机可自算，零协议改动。认领经 _bucket_holder 同一 TTL/快照过滤
+        （TTL 过期/失败机认领不触发跳台）。box_color 空（ Mission 未达/回退
+        失败）恒 False——空串≠任何色，误判会把同色台跳掉。scene 缺
+        payload_types → 门失效退化原行为（logwarn 一次）。"""
+        if not self._cid_claim_gate or not self.box_color:
+            return False
+        if self._fleet_color is None:
+            try:
+                pts = self.scene.payload_types
+                n_pt = len(pts)
+                self._fleet_color = {
+                    i: self.scene.color_for_type(pts[i % n_pt])
+                    for i in range(self.scene.drone_count)}
+            except AttributeError:
+                self._fleet_color = {}
+                rospy.logwarn("drone %d claim_color_gate: scene lacks "
+                              "payload_types/drone_count, gate inert",
+                              self.drone_id)
+        if not self._fleet_color:
+            return False
+        h = self._bucket_holder(dp_id)
+        col = self._fleet_color.get(h) if h is not None else None
+        return col is not None and col != self.box_color
 
     def _on_mission(self, msg):
         if self.state != "IDLE":
@@ -859,12 +898,19 @@ class MissionExecutor:
         # L1 排除记忆：越过本局已确认异色的平台。自色平台不可能入集合
         # （det=自色不采集），跳查必有解；集合若病态全满则循环自然退化回
         # 原环重访（自愈）。det=255/低置信不采集——相机病态时同样退化。
+        # R2 门（claim_color_gate）：路由级并入同循环——异色认领的台连腿
+        # 都不飞（GOTO_HI 白跑 10-15s 也省）。认领是时变的：滚环后重查。
         for _ in range(len(self._scan_order)):
             nxt = self._scan_order[self._scan_idx]
-            if nxt.id not in self._scan_excluded:
+            if nxt.id not in self._scan_excluded \
+                    and not self._foreign_claim(nxt.id):
                 break
-            rospy.logwarn("drone %d RECON skip excluded plat %d (%d excluded)",
-                          self.drone_id, nxt.id, len(self._scan_excluded))
+            if nxt.id in self._scan_excluded:
+                rospy.logwarn("drone %d RECON skip excluded plat %d (%d excluded)",
+                              self.drone_id, nxt.id, len(self._scan_excluded))
+            else:
+                rospy.logwarn("drone %d RECON skip foreign-claimed plat %d "
+                              "(route level)", self.drone_id, nxt.id)
             self._scan_idx += 1
             if self._scan_idx >= len(self._scan_order):
                 self._scan_round += 1
@@ -946,6 +992,15 @@ class MissionExecutor:
             if self._scan_mode == "GOTO_LO" and self._lo_stage < 2:
                 occ = self._low_occupant(dp)
                 if occ is not None:
+                    # R2 门（claim_color_gate）：让位前先查认领色——异色认领
+                    # =本台永不收本机箱色，等待+白降+dwell 白扫全可省
+                    #（四局取证 25-40s/次）；同色/无认领照旧让位等待。
+                    if self._foreign_claim(dp.id):
+                        rospy.logwarn("drone %d RECON plat %d foreign-color "
+                                      "claim, skip before yielding",
+                                      self.drone_id, dp.id)
+                        self._scan_advance("foreign_claim")
+                        return
                     self._enter_wait(dp, "low-occupied by", occ)
                     return
             if self._scan_mode == "GOTO_HI":
@@ -1046,6 +1101,13 @@ class MissionExecutor:
                 return
             # T3（RECON 提速案 2026-10-11）：等待期 5s 心跳——90s 等待窗内
             # 此前零痕迹（进/出两行之间全盲），holder/lo_occ 只读查询。
+            # R2 门（claim_color_gate）：等待中认领才出现的序列（进 WAIT_HI
+            # 时 holder 尚 None）——认领异色即撤离，不等满 90s。
+            if self._foreign_claim(dp.id):
+                rospy.logwarn("drone %d RECON plat %d foreign-color claim "
+                              "during wait, skip", self.drone_id, dp.id)
+                self._scan_advance("foreign_claim")
+                return
             rospy.logwarn_throttle(
                 5.0, "drone %d RECON WAIT_HI plat %d waited=%.0f/%.0f "
                 "holder=%s lo_occ=%s", self.drone_id, dp.id,

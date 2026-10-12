@@ -133,6 +133,14 @@ color_id:
   #      0 触发——认领在到位沿之后才出现，白降已被 low_occupant+SCAN-LOCK 双闸拦）
   recon_holder_precheck: false # L2：判毙（检查时机错位，无增量价值）
   claim_ttl_s: 0               # L6：未获检验（本局零僵尸）；合法认领最长 52s，代码保留门控
+  # ---- RECON 提速 R2 臂（2026-10-12 立案，同日 5 局 A/B 收官翻默认）----------
+  # claim_color_gate：异色认领跳台。机队色表=任务分配律静态导出（与
+  # task_generator 同式），认领=他机机载识别广播——不消费 dp.color（sim 特权）。
+  # A/B 定谳（B 臂 5 局 vs A 池 6 局默认档）：DONE med 237→197.3s（−16.7%，
+  # 线 −10%；5 局全部单局 ≤207.4）；5×满分/landed 6/6/RTF≥0.975/STALL 0/
+  # Σcol 2/0/0/0/1；机制对质 12 跳台 12/12 全异色零误杀，t_recon d0 −38%/
+  # d3 −22%/d5 −25%（d4 蓝对照连带 −30%，d1/d2 +8s 噪声级）。
+  claim_color_gate: true
   settle_gate: true        # SCAN 入场稳定门（P0-1 第二刀）：est xy 在窗内极差
                            # <settle_tol_m 才开扫——强迫 MATCH/释放发生在 nav
                            # 收敛圈（真值 ≤0.15）内而非摆动弧上（run15' 法证：
