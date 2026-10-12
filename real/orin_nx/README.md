@@ -192,6 +192,16 @@ swap 须存在（≥4GB zram/文件）；preflight 第 7 检看 `MemAvailable �
     对齐轴档均未上机。装机四件装订（§2）→ 地面通电跑 preflight ⑥（hz≥10 且
     encoding 在白名单）→ 手持悬停看 `/drone_0/align/corr` 方向与手移方向一致
     （不一致=align_axes 接反）
+11. **「满分⇏零撞」容错口径（sim 定谳 2026-10-11/12，带入真机预期管理）**：
+    mx_base1011 三局 3×满分中 run1 带 2 障碍撞照常 6/6 落地；cloud_mem 6→24
+    A/B（同 seed42 三局）3×满分带 1 障碍撞+2 机间互碰。**判分目标=满分落地，
+    零撞不是赛点**。障碍撞两形态现场对策：①盲撞（clr≫0.35，先见后盲）——
+    证据窗可治，`cloud_mem_frames: 6→24` 已 A/B 验证为**安全一键杠杆**
+    （score/FAIL/RTF/done_t/stuck 全绿、盲撞 0 起），sim 无净收益未翻默认，
+    现场若现盲撞形态优先拧这颗；②挤入（clr≈0.35 且 close>0，看见仍贴入）——
+    **证据窗假说已证伪**（mem 翻 4 倍残根照旧），病灶在推力权衡不在感知记忆，
+    禁「再减速」治挤入（③案判毙定谳）。机间互碰（COLLIDED inter-drone）
+    单独计数，与障碍撞不混口径（collision_census A 通道只认 COLLIDED obstacle）。
 
 ## 7. 与 sim 的 4 处设置差异（settings_real.yaml 头部同文）
 
