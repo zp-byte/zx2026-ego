@@ -24,7 +24,7 @@ imu_topic: "/mavros/imu/data_raw"
 image0_topic: "/camera/infra1/image_rect_raw"
 image1_topic: "/camera/infra2/image_rect_raw"
 
-output_path: "/home/ubuntu/vins_output"
+output_path: "/home/nv/vins_output"
 
 cam0_calib: "vins_left.yaml"
 cam1_calib: "vins_right.yaml"
@@ -83,5 +83,5 @@ td: -0.05                           # initial value of time offset (s)
 
 #loop closure parameters
 load_previous_pose_graph: 0
-pose_graph_save_path: "/home/ubuntu/vins_output/pose_graph/"
+pose_graph_save_path: "/home/nv/vins_output/pose_graph/"
 save_image: 0                       # fd250 为 1（loop_fusion 可视化）；本包不跑 loop_fusion，关
